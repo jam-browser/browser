@@ -1,0 +1,85 @@
+{
+  "name": "jam-browser",
+  "productName": "Jam Browser",
+  "version": "0.1.0",
+  "description": "친구와 같은 페이지를 함께 보는 Jam 기능이 있는 데스크톱 브라우저",
+  "author": "jam-browser",
+  "homepage": "https://github.com/jam-browser/jam-browser",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node test/sync-test.js && node test/relay-test.js",
+    "icon": "electron scripts/make-icon.js",
+    "dist": "electron-builder --win --publish never",
+    "release": "electron-builder --win --publish always",
+    "relay": "node relay/jam-relay.js"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11",
+    "ws": "^8.23.0"
+  },
+  "devDependencies": {
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "io.github.jambrowser.browser",
+    "productName": "Jam Browser",
+    "copyright": "Copyright © 2026 39nhs",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "server/**/*",
+      "shared/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "artifactName": "JamBrowser-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "runAfterFinish": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Jam Browser",
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "jam-browser",
+        "repo": "jam-browser",
+        "releaseType": "release"
+      }
+    ],
+    "extraFiles": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE.txt"
+      },
+      {
+        "from": "PRIVACY.md",
+        "to": "PRIVACY.md"
+      }
+    ]
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jam-browser/jam-browser.git"
+  }
+}

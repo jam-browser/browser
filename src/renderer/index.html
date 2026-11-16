@@ -1,0 +1,365 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http: https:; connect-src ws: wss:;" />
+  <title>Jam Browser</title>
+  <link rel="stylesheet" href="styles.css" />
+  <style id="user-css"></style>
+</head>
+<body>
+  <div id="app">
+    <!-- 탭 바 -->
+    <header id="tabbar">
+      <div id="tabs"></div>
+      <button id="new-tab" class="icon-btn" title="새 탭 (Ctrl+T)">＋</button>
+      <div class="spacer"></div>
+      <button id="jam-status" class="jam-pill" title="Jam 패널 열기/닫기">
+        <span class="dot"></span><span id="jam-status-text">Jam</span>
+      </button>
+    </header>
+
+    <!-- 주소창 -->
+    <nav id="toolbar">
+      <button id="back" class="icon-btn" title="뒤로 (Alt+←)">←</button>
+      <button id="forward" class="icon-btn" title="앞으로 (Alt+→)">→</button>
+      <button id="reload" class="icon-btn" title="새로고침 (F5)">↻</button>
+      <button id="home-btn" class="icon-btn" title="홈" hidden>⌂</button>
+      <form id="url-form">
+        <span id="jam-tab-flag" hidden>JAM</span>
+        <span id="lock-flag" hidden title="다른 사이트로 이동하려면 호스트의 권한이 필요해요">🔒 같은 사이트만</span>
+        <input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="검색어 또는 주소 입력" />
+        <button id="zoom-ind" type="button" class="url-chip" title="원래 크기로 (Ctrl+0)" hidden>100%</button>
+        <button id="bookmark-star" type="button" class="url-star" title="북마크 (Ctrl+D)" hidden>☆</button>
+      </form>
+      <button id="add-to-queue" class="text-btn" title="지금 페이지를 Jam 대기열에 추가" disabled>＋ 대기열</button>
+      <div class="pop-wrap">
+        <button id="downloads-btn" class="icon-btn" title="다운로드">⬇<span id="downloads-badge" class="badge" hidden></span></button>
+        <div id="downloads-pop" class="popover">
+          <div class="pop-title">다운로드</div>
+          <p class="muted small pop-note">🛡️ 설치·실행 파일(exe, msi, zip 등)은 다운로드 폴더에 "이름.다운로드확인전" 으로 저장돼서 더블클릭해도 실행되지 않아요. 직접 "실행 가능하게 풀기"를 눌러 확인해야 원래 이름으로 바뀌어요.</p>
+          <ul id="downloads-list"></ul>
+          <div id="downloads-empty" class="muted small">아직 받은 파일이 없어요</div>
+        </div>
+      </div>
+      <button id="menu-btn" class="icon-btn" title="메뉴 · 설정">☰</button>
+    </nav>
+
+    <!-- 북마크 바 (Ctrl+Shift+B) -->
+    <nav id="bookmarks-bar"></nav>
+
+    <main id="main">
+      <section id="views">
+        <!-- 새 탭: 스피드 다이얼 -->
+        <div id="start-page" hidden>
+          <form id="sd-search">
+            <input id="sd-q" type="text" autocomplete="off" spellcheck="false" placeholder="검색하거나 주소를 입력하세요" />
+            <span class="sd-engine" id="sd-engine">Google</span>
+          </form>
+          <div class="sd-section-title">스피드 다이얼</div>
+          <div id="sd-tiles" class="sd-grid"></div>
+          <div id="sd-empty" class="muted small">북마크(⭐, Ctrl+D)한 사이트가 여기에 타일로 나와요</div>
+          <div id="sd-frequent-wrap">
+            <div class="sd-section-title">자주 가는 곳</div>
+            <div id="sd-frequent" class="sd-grid"></div>
+          </div>
+        </div>
+        <!-- 페이지에서 찾기 -->
+        <div id="find-bar" hidden>
+          <input id="find-q" type="text" placeholder="페이지에서 찾기" spellcheck="false" />
+          <span id="find-count" class="muted small"></span>
+          <button id="find-prev" class="icon-btn" title="이전 (Shift+Enter)">↑</button>
+          <button id="find-next" class="icon-btn" title="다음 (Enter)">↓</button>
+          <button id="find-close" class="icon-btn" title="닫기 (Esc)">✕</button>
+        </div>
+        <button id="split-close" class="text-btn small" hidden title="분할 화면 닫기">분할 닫기 ✕</button>
+        <div id="drift-banner" hidden>
+          <span id="drift-text"></span>
+          <button id="drift-join" class="text-btn small">Jam 페이지로 이동</button>
+        </div>
+        <div id="login-banner" class="top-banner" hidden>
+          <span>🔐 로그인 중이에요 · 이 로그인 창은 나만 보여요. 로그인을 마치면 <b id="login-target"></b>(으)로 이동하고 영상·화면을 따라가요</span>
+          <button id="login-skip" class="text-btn small">지금 Jam으로 이동</button>
+        </div>
+        <div id="clip-site-banner" class="top-banner warn" hidden>
+          <span>⚠️ 이 사이트에는 클립보드에 복사하는 기능이 있어요. 복사된 내용이 명령어라면 <b>절대 실행하지 마세요.</b></span>
+          <button id="clip-site-close" class="text-btn small">닫기</button>
+        </div>
+        <div id="reaction-layer"></div>
+        <div id="minimap" hidden title="페이지 전체에서 각자 보고 있는 영역"></div>
+        <!-- 다른 사람 화면을 따라가는 중일 때 테두리 -->
+        <div id="follow-frame" hidden><span id="follow-label"></span></div>
+        <!-- 호스트: 참여 요청 -->
+        <div id="join-requests" hidden></div>
+        <!-- Jam 오버레이: 사람을 누르면 그 사람이 보는 곳을 따라감 -->
+        <div id="jam-overlay" hidden>
+          <span class="ov-badge" title="진행 중인 Jam">JAM</span>
+          <div id="ov-people"></div>
+          <button id="ov-panel" class="ov-btn" title="Jam 패널 열기/닫기 (Ctrl+J)">💬<span id="ov-unread" class="badge" hidden></span></button>
+        </div>
+      </section>
+
+      <aside id="jam-panel">
+        <!-- Jam 시작 전 -->
+        <button class="panel-close icon-btn" title="패널 숨기기 (Ctrl+J)">✕</button>
+        <div id="jam-idle">
+          <div class="hero">
+            <div class="hero-badge">JAM</div>
+            <h2>친구와 함께 웹 서핑</h2>
+            <p>Jam을 시작하면 같은 페이지를 함께 보고, 서로의 커서를 보고,
+              다음에 볼 페이지를 대기열에 같이 쌓을 수 있어요.</p>
+          </div>
+
+          <label class="field">
+            <span>내 이름</span>
+            <input id="name" type="text" maxlength="24" placeholder="예: 현석" />
+          </label>
+
+          <button id="start-jam" class="primary-btn">Jam 시작하기</button>
+
+          <div class="divider"><span>또는 친구의 Jam에 참여</span></div>
+
+          <label class="field">
+            <span>초대 코드</span>
+            <input id="invite" type="text" spellcheck="false" placeholder="jam://192.168.0.5:3030/K7Q2M/비밀키…" />
+          </label>
+          <button id="join-jam" class="secondary-btn">참여하기</button>
+
+          <details class="advanced">
+            <summary>인터넷으로 함께하기 (중계 서버)</summary>
+            <p>기본은 중앙 서버 없이 <b>내 PC(호스트)에 친구가 직접 접속</b>하는 방식이에요(같은 와이파이/네트워크).
+              멀리 있는 친구와 하려면 중계 서버 주소를 넣으세요. 중계 서버는 길만 이어 주고,
+              대화는 초대 코드의 비밀키로 암호화되어 있어서 중계 서버도 내용을 볼 수 없어요.</p>
+            <input id="server-url" type="text" spellcheck="false" placeholder="relay.example.com:3031 (비우면 같은 네트워크 전용)" />
+          </details>
+        </div>
+
+        <!-- Jam 진행 중 -->
+        <div id="jam-active" hidden>
+          <div class="panel-head">
+            <div>
+              <div class="eyebrow">진행 중인 Jam</div>
+              <div id="room-code" class="room-code"></div>
+            </div>
+            <button id="leave-jam" class="text-btn danger">나가기</button>
+          </div>
+
+          <div class="invite-box">
+            <div class="invite-label">친구에게 이 초대 코드를 보내세요</div>
+            <div class="invite-row">
+              <code id="invite-text"></code>
+              <button id="copy-invite" class="text-btn small">복사</button>
+            </div>
+            <div id="invite-alt" class="muted small"></div>
+          </div>
+
+          <div class="section">
+            <div class="section-title">참여자 <span id="member-count" class="muted"></span></div>
+            <ul id="members"></ul>
+          </div>
+
+          <div class="section toggles">
+            <label class="toggle"><input id="follow" type="checkbox" checked /><span>페이지 따라가기 (동영상 재생 위치 포함)</span></label>
+            <label class="toggle"><input id="follow-scroll" type="checkbox" /><span>스크롤도 따라가기</span></label>
+            <label class="toggle" id="allow-all-row"><input id="allow-all" type="checkbox" /><span>모든 참여자에게 다른 사이트 이동 허용</span></label>
+            <label class="toggle" id="approval-row"><input id="require-approval" type="checkbox" checked /><span>참여할 때 호스트 승인 받기</span></label>
+            <div id="my-perm" class="muted small"></div>
+          </div>
+
+          <div class="section now">
+            <div class="section-title">지금 함께 보는 페이지</div>
+            <div id="now-page" class="now-page"></div>
+          </div>
+
+          <div class="section">
+            <div class="section-title-row">
+              <div class="section-title">대기열</div>
+              <button id="queue-next" class="text-btn small" title="대기열의 다음 페이지로 다 같이 이동">다음 ▶</button>
+            </div>
+            <ul id="queue"></ul>
+            <div id="queue-empty" class="muted small">비어 있어요. 다른 탭에서 찾은 페이지를 <b>＋ 대기열</b>로 추가해 보세요.</div>
+          </div>
+
+          <div class="section chat-section">
+            <div class="section-title">채팅</div>
+            <ul id="chat"></ul>
+            <div id="reactions">
+              <button data-emoji="👍">👍</button><button data-emoji="😂">😂</button><button data-emoji="😮">😮</button>
+              <button data-emoji="❤️">❤️</button><button data-emoji="🔥">🔥</button><button data-emoji="👏">👏</button>
+            </div>
+            <form id="chat-form">
+              <input id="chat-input" type="text" maxlength="500" autocomplete="off" placeholder="메시지 보내기" />
+            </form>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <dialog id="clip-modal">
+    <h3>⚠️ 사이트가 클립보드에 내용을 복사했어요</h3>
+    <p class="muted">사이트: <b id="clip-site"></b></p>
+    <pre id="clip-text"></pre>
+    <div id="clip-danger" class="danger-box">
+      <b>명령어로 보여요. 절대 실행하지 마세요!</b>
+      <p>"사람인지 확인", "오류 해결" 등을 이유로 <b>Win+R</b>(실행 창), 명령 프롬프트, PowerShell, 터미널에 붙여넣으라고 하는 것은 해킹 수법이에요.</p>
+    </div>
+    <p class="note">명령어라면 어떤 이유로도 실행하지 마세요. 내가 직접 복사한 게 아니라면 클립보드를 비우는 게 안전해요.</p>
+    <div class="modal-actions">
+      <button id="clip-clear" class="primary-btn danger-btn">클립보드 비우기</button>
+      <button id="clip-ok" class="secondary-btn">확인했어요</button>
+    </div>
+  </dialog>
+
+  <!-- 방문 기록 (Ctrl+H) -->
+  <dialog id="history-dialog" class="sheet">
+    <div class="sheet-head">
+      <h3>방문 기록</h3>
+      <input id="history-q" type="text" placeholder="기록 검색" spellcheck="false" />
+      <button id="history-clear" class="text-btn small danger">기록 모두 지우기</button>
+      <button id="history-close" class="icon-btn">✕</button>
+    </div>
+    <p class="muted small">로그인·인증 페이지는 기록하지 않아요.</p>
+    <ul id="history-list"></ul>
+  </dialog>
+
+  <!-- 설정 · 꾸미기 (Ctrl+,) -->
+  <dialog id="settings-dialog" class="sheet wide">
+    <div class="sheet-head">
+      <h3>설정 · 꾸미기</h3>
+      <div class="spacer"></div>
+      <button id="settings-close" class="icon-btn">✕</button>
+    </div>
+    <div class="set-body">
+      <nav class="set-nav">
+        <button data-page="set-look" class="on">모양</button>
+        <button data-page="set-layout">배치</button>
+        <button data-page="set-start">시작 · 검색</button>
+        <button data-page="set-sites">사이트 꾸미기</button>
+        <button data-page="set-bookmarks">북마크</button>
+        <button data-page="set-advanced">사용자 CSS · 백업</button>
+        <button data-page="set-keys">단축키</button>
+        <button data-page="set-about">정보</button>
+      </nav>
+      <div class="set-pages">
+        <section id="set-look" class="set-page">
+          <div class="set-row"><span>스타일 프리셋</span><div id="preset-row" class="btn-row"></div></div>
+          <div class="set-row"><span>테마</span>
+            <div class="seg" data-setting="theme"><button data-value="dark">다크</button><button data-value="light">라이트</button><button data-value="system">시스템</button></div>
+          </div>
+          <div class="set-row"><span>강조색</span>
+            <div class="btn-row">
+              <button class="swatch" data-color="#2ee6a6" style="background:#2ee6a6"></button>
+              <button class="swatch" data-color="#ef3939" style="background:#ef3939"></button>
+              <button class="swatch" data-color="#1a73e8" style="background:#1a73e8"></button>
+              <button class="swatch" data-color="#ff7139" style="background:#ff7139"></button>
+              <button class="swatch" data-color="#9059ff" style="background:#9059ff"></button>
+              <button class="swatch" data-color="#ffd43b" style="background:#ffd43b"></button>
+              <input id="set-accent" type="color" title="직접 고르기" />
+            </div>
+          </div>
+          <label class="set-row toggle"><span>페이지 색을 강조색으로</span><input id="set-accent-page" type="checkbox" /></label>
+          <div class="set-row"><span>밀도</span>
+            <div class="seg" data-setting="density"><button data-value="normal">기본</button><button data-value="compact">컴팩트</button></div>
+          </div>
+          <div class="set-row"><span>모서리 둥글기</span><input id="set-radius" type="range" min="0" max="18" step="1" /></div>
+        </section>
+
+        <section id="set-layout" class="set-page" hidden>
+          <div class="set-row"><span>탭 위치</span>
+            <div class="seg" data-setting="tabPosition"><button data-value="top">위</button><button data-value="bottom">아래</button><button data-value="left">왼쪽 (세로 탭)</button><button data-value="right">오른쪽</button></div>
+          </div>
+          <div class="set-row"><span>Jam 패널 위치</span>
+            <div class="seg" data-setting="panelSide"><button data-value="right">오른쪽</button><button data-value="left">왼쪽</button></div>
+          </div>
+          <div class="set-row"><span>Jam 오버레이 위치</span>
+            <div class="seg" data-setting="overlayPosition"><button data-value="bottom">아래</button><button data-value="top">위</button></div>
+          </div>
+          <label class="set-row toggle"><span>북마크 바 보이기 (Ctrl+Shift+B)</span><input id="set-bookmarks-bar" type="checkbox" /></label>
+          <label class="set-row toggle"><span>홈 버튼 보이기</span><input id="set-home-btn" type="checkbox" /></label>
+          <label class="set-row toggle"><span>Jam 미니맵 보이기</span><input id="set-minimap" type="checkbox" /></label>
+          <p class="muted small">Jam 패널은 Ctrl+J 또는 패널의 ✕ 로 숨길 수 있어요. 숨겨도 페이지 위 오버레이로 사람을 누르면 그 사람 화면을 따라갈 수 있어요.</p>
+        </section>
+
+        <section id="set-start" class="set-page" hidden>
+          <div class="set-row"><span>새 탭</span>
+            <div class="seg" data-setting="newTab"><button data-value="speeddial">스피드 다이얼</button><button data-value="home">홈페이지</button></div>
+          </div>
+          <div class="set-row"><span>홈페이지</span><input id="set-home-url" type="text" spellcheck="false" /></div>
+          <div class="set-row"><span>검색 엔진</span>
+            <select id="set-engine"><option value="google">Google</option><option value="naver">네이버</option><option value="duckduckgo">DuckDuckGo</option><option value="bing">Bing</option></select>
+          </div>
+          <label class="set-row toggle"><span>시작할 때 지난번 탭 다시 열기</span><input id="set-restore" type="checkbox" /></label>
+        </section>
+
+        <section id="set-sites" class="set-page" hidden>
+          <p class="muted small">사이트마다 원하는 CSS를 넣어 웹페이지 모양을 바꿀 수 있어요. 나에게만 적용되고 Jam 친구에게는 영향이 없어요.</p>
+          <div class="set-row"><span>사이트</span><div class="btn-row grow"><input id="site-css-site" type="text" placeholder="youtube.com (* = 모든 사이트)" spellcheck="false" /><button id="site-css-current" class="mini-btn">지금 사이트</button></div></div>
+          <textarea id="site-css-text" spellcheck="false" placeholder="예) #comments { display: none !important; }"></textarea>
+          <button id="site-css-add" class="secondary-btn small-btn">저장하고 적용</button>
+          <ul id="site-css-list" class="set-list"></ul>
+        </section>
+
+        <section id="set-bookmarks" class="set-page" hidden>
+          <ul id="bm-manage" class="set-list"></ul>
+        </section>
+
+        <section id="set-advanced" class="set-page" hidden>
+          <p class="muted small">브라우저 화면(탭, 주소창, 패널 등)에 직접 CSS를 넣어 꾸밀 수 있어요. 예) <code>#tabbar { background: #2b1840 }</code></p>
+          <textarea id="set-user-css" spellcheck="false" placeholder="브라우저 UI용 CSS"></textarea>
+          <div class="btn-row">
+            <button id="settings-export" class="secondary-btn small-btn">설정 내보내기 (복사)</button>
+            <button id="settings-import" class="secondary-btn small-btn">설정 가져오기</button>
+            <button id="settings-reset" class="secondary-btn small-btn">기본값으로</button>
+          </div>
+        </section>
+
+        <section id="set-about" class="set-page" hidden>
+          <p id="app-version"></p>
+          <div class="about-box">
+            <b>개인정보</b>
+            <ul>
+              <li>개발자에게 사용 기록·통계를 보내지 않아요.</li>
+              <li>업데이트를 확인할 때 GitHub이 내 IP 주소를 알 수 있어요.</li>
+              <li>Jam 참여자끼리 이름, 보는 페이지(로그인·결제 주소 제외), 커서·화면 영역, 영상 상태, 채팅이 암호화되어 공유돼요. 호스트는 참여 요청한 사람의 IP를 봐요.</li>
+              <li>중계 서버는 내용을 볼 수 없고 접속 IP·시간·데이터 양만 알 수 있어요.</li>
+              <li>기록·북마크·설정·로그인은 내 PC에만 저장돼요.</li>
+            </ul>
+            <p class="muted small">자세한 내용은 설치 폴더의 PRIVACY.md 를 보세요.</p>
+          </div>
+          <p class="muted small">MIT 라이선스 · 아무 보증 없이 제공돼요. Electron/Chromium 등 오픈소스 구성요소의 라이선스는 설치 폴더의 LICENSE.electron.txt, LICENSES.chromium.html 에 있어요.</p>
+        </section>
+
+        <section id="set-keys" class="set-page" hidden>
+          <table class="keys">
+            <tr><td>Ctrl+T / Ctrl+W</td><td>새 탭 / 탭 닫기</td></tr>
+            <tr><td>Ctrl+Shift+T</td><td>닫은 탭 다시 열기</td></tr>
+            <tr><td>Ctrl+Tab / Ctrl+Shift+Tab</td><td>다음 / 이전 탭</td></tr>
+            <tr><td>Ctrl+L</td><td>주소창</td></tr>
+            <tr><td>Ctrl+D</td><td>북마크</td></tr>
+            <tr><td>Ctrl+Shift+B</td><td>북마크 바</td></tr>
+            <tr><td>Ctrl+H</td><td>방문 기록</td></tr>
+            <tr><td>Ctrl+F</td><td>페이지에서 찾기</td></tr>
+            <tr><td>Ctrl+ + / Ctrl+ - / Ctrl+0</td><td>확대 / 축소 / 원래대로 (사이트별 기억)</td></tr>
+            <tr><td>Ctrl+J</td><td>Jam 패널 보이기/숨기기</td></tr>
+            <tr><td>Ctrl+,</td><td>설정</td></tr>
+            <tr><td>F5 / Alt+← / Alt+→</td><td>새로고침 / 뒤로 / 앞으로</td></tr>
+            <tr><td>F11</td><td>전체 화면</td></tr>
+            <tr><td>F12</td><td>개발자 도구</td></tr>
+            <tr><td>탭 우클릭</td><td>고정 · 복제 · 분할 화면 · 다른 탭 닫기</td></tr>
+            <tr><td>탭 드래그</td><td>순서 바꾸기</td></tr>
+          </table>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
+  <div id="ctx-menu" hidden></div>
+  <div id="toasts"></div>
+  <script src="../../shared/site.js"></script>
+  <script src="app.js"></script>
+  <script src="safety.js"></script>
+  <script src="customize.js"></script>
+</body>
+</html>

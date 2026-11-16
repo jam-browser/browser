@@ -1,0 +1,14 @@
+{
+  "name": "jam-relay",
+  "version": "1.0.0",
+  "description": "Jam Browser routing-only relay server (forwards end-to-end encrypted data, stores nothing)",
+  "main": "jam-relay.js",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "start": "node jam-relay.js"
+  },
+  "dependencies": {
+    "ws": "^8.23.0"
+  }
+}

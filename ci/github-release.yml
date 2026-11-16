@@ -1,0 +1,27 @@
+# 버전 태그(v0.1.1 같은)를 올리면 Windows 설치 파일을 빌드해서 GitHub 릴리스로 올린다.
+# 설치된 Jam Browser 는 이 릴리스(latest.yml)를 보고 자동으로 업데이트한다.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node node_modules/electron/install.js
+      - run: npm test
+      - run: npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
