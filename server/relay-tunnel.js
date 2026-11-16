@@ -1,6 +1,6 @@
 'use strict';
 /**
- * 호스트 쪽 중계 터널 (relay/jam-relay.js 와 짝)
+ * 호스트 쪽 중계 터널 (중계 서버: https://github.com/jam-browser/backend)
  *
  *   참여자 ──(인터넷)──▶ 중계 서버 ──▶ [이 터널, 호스트 PC] ──▶ 호스트 PC 안의 Jam 서버(127.0.0.1)
  *

@@ -67,8 +67,15 @@
 
 ## 멀리 있는 친구와 하기: 중계 서버
 
-저렴한 Windows 서버(또는 집 PC) 하나에 [`relay/`](relay) 폴더를 올려 실행하면 돼요. 중계 서버는 **길만 이어 주고 내용은 볼 수 없어요.**
-자세한 설치 방법은 [relay/README.md](relay/README.md) 를 보세요.
+저렴한 Windows 서버(또는 집 PC) 하나에 중계 서버를 설치하면 돼요. 중계 서버는 **길만 이어 주고 내용은 볼 수 없어요.**
+설치 방법과 자동 업데이트는 [jam-browser/backend](https://github.com/jam-browser/backend) 를 보세요.
+
+| 포트 | 어디서 | 용도 |
+| --- | --- | --- |
+| TCP 3030 | 호스트 PC | 같은 네트워크 친구의 직접 접속 (공유기 포트 포워딩하면 인터넷에서도 직접 접속 가능) |
+| TCP 3031 | 중계 서버 | 인터넷 친구 접속 |
+
+자세한 사용법·보안·포트 안내: [jam-browser/docs](https://github.com/jam-browser/docs)
 
 ## 개발
 
@@ -76,11 +83,11 @@
 npm install
 node node_modules/electron/install.js   # npm 이 Electron 본체를 받지 않았을 때
 npm start          # 실행
-npm test           # 서버 · 중계 서버 테스트
+npm test           # 서버 테스트 (+ backend 저장소가 옆 폴더에 있으면 중계 연동 테스트)
 npm run dist       # 설치 파일 만들기 (dist/)
 ```
 
-릴리스: `package.json` 의 버전을 올리고 `v버전` 태그를 push 하면 GitHub Actions 가 설치 파일을 빌드해 릴리스로 올리고, 설치된 앱들이 자동으로 업데이트해요.
+릴리스: `package.json` 의 버전을 올리고 `npm run dist` 로 만든 설치 파일을 `gh release create v버전 …` 으로 올리면, 설치된 앱들이 자동으로 업데이트해요 (자동 빌드 설정은 [`ci/`](ci)).
 
 ### 구조
 
@@ -93,7 +100,6 @@ src/renderer/safety.js     클립보드 경고 · 다운로드 목록
 src/renderer/customize.js  설정 · 꾸미기 · 북마크 · 기록 · 찾기 · 확대 · 분할 화면 · 스피드 다이얼 · 업데이트 알림
 server/jam-server.js       호스트 PC 안에서 도는 Jam 방 서버 (인증·암호화·승인·권한·차단)
 server/relay-tunnel.js     호스트 PC ↔ 중계 서버 터널
-relay/                     중계 서버 (Windows 실행·자동 시작 스크립트 포함)
 shared/                    같은 사이트 판단 · 로그인 주소 판별 · 암호화 (Node 쪽)
 test/                      서버·중계 테스트, 실제 앱 E2E (test/e2e/README.md)
 ```

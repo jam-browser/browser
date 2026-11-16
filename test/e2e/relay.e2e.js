@@ -1,5 +1,5 @@
 // E2E: 중계 서버를 거쳐 참여 (호스트 9301, 게스트 9302). 중계 서버는 127.0.0.1:3031 에 미리 띄워 둘 것
-//   node relay/jam-relay.js
+//   (backend 저장소에서) node jam-relay.js
 const WebSocket = require(process.argv[2] + '/node_modules/ws');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

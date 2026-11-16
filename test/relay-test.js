@@ -6,7 +6,21 @@ const crypto = require('crypto');
 const WebSocket = require('ws');
 const { createJamServer } = require('../server/jam-server');
 const { startRelayTunnel } = require('../server/relay-tunnel');
-const { createRelay } = require('../relay/jam-relay');
+// 중계 서버는 backend 저장소(jam-browser/backend)에 있다. JAM_RELAY_PATH 또는 옆 폴더에서 찾는다
+const path = require('path');
+const fs = require('fs');
+const relayCandidates = [
+  process.env.JAM_RELAY_PATH,
+  path.join(__dirname, '..', '..', 'jam-backend-build', 'jam-relay.js'),
+  path.join(__dirname, '..', '..', 'jam-backend', 'jam-relay.js'),
+  path.join(__dirname, '..', '..', 'backend', 'jam-relay.js'),
+].filter(Boolean);
+const relayPath = relayCandidates.find((p) => fs.existsSync(p));
+if (!relayPath) {
+  console.log('중계 서버 테스트 건너뜀: backend 저장소를 옆 폴더에 두거나 JAM_RELAY_PATH 를 지정하세요');
+  process.exit(0);
+}
+const { createRelay } = require(relayPath);
 const { newSecret, deriveKeys, makeProof, seal, open, C2S, S2C } = require('../shared/jam-crypto');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

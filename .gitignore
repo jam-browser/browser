@@ -6,8 +6,5 @@ test/e2e/ud-*/
 test/e2e/*.png
 test/e2e/*.log
 test/e2e/*.err
-# 중계 서버 실행 중 생기는 파일
-relay/relay.log
-relay/run-relay.cmd
 # 내 PC 작업 환경 메모 (경로 등 개인 정보 → 공개하지 않음)
 LOCAL-SETUP.md

@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "친구와 같은 페이지를 함께 보는 Jam 기능이 있는 데스크톱 브라우저",
   "author": "jam-browser",
-  "homepage": "https://github.com/jam-browser/jam-browser",
+  "homepage": "https://github.com/jam-browser/browser",
   "main": "src/main.js",
   "private": true,
   "scripts": {
@@ -12,8 +12,7 @@
     "test": "node test/sync-test.js && node test/relay-test.js",
     "icon": "electron scripts/make-icon.js",
     "dist": "electron-builder --win --publish never",
-    "release": "electron-builder --win --publish always",
-    "relay": "node relay/jam-relay.js"
+    "release": "electron-builder --win --publish always"
   },
   "dependencies": {
     "electron-updater": "^6.8.11",
@@ -62,7 +61,7 @@
       {
         "provider": "github",
         "owner": "jam-browser",
-        "repo": "jam-browser",
+        "repo": "browser",
         "releaseType": "release"
       }
     ],
@@ -80,6 +79,6 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jam-browser/jam-browser.git"
+    "url": "https://github.com/jam-browser/browser.git"
   }
 }
