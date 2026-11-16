@@ -1,7 +1,9 @@
-// E2E: 중계 서버를 거쳐 참여 (호스트 9301, 게스트 9302). 중계 서버는 127.0.0.1:3031 에 미리 띄워 둘 것
-//   (backend 저장소에서) node jam-relay.js
+// E2E: 중계 서버를 거쳐 참여 (호스트 9301, 게스트 9302)
+//   중계 서버 주소: JAM_RELAY_ADDR (기본 127.0.0.1:3031 — backend 저장소에서 node jam-relay.js 로 미리 띄워 둘 것)
+//   예) 실제 서버로: JAM_RELAY_ADDR=공인IP:3031
 const WebSocket = require(process.argv[2] + '/node_modules/ws');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RELAY = process.env.JAM_RELAY_ADDR || '127.0.0.1:3031';
 
 async function page(port) {
   let t;
@@ -45,9 +47,9 @@ const step = (s) => console.log('✓', s);
 
   await A.ev(`navigateTab(activeTab, 'https://example.com/'); 1`);
   await until('host page', () => A.ev(`activeTab.url === 'https://example.com/' && !activeTab.loading`));
-  await A.ev(`document.querySelector('#name').value='호스트'; document.querySelector('#server-url').value='127.0.0.1:3031'; document.querySelector('#start-jam').click(); 1`);
+  await A.ev(`document.querySelector('#name').value='호스트'; document.querySelector('#server-url').value=${JSON.stringify(RELAY)}; document.querySelector('#start-jam').click(); 1`);
   const invite = await until('host started with relay', () => A.ev(`jam.active && jam.invite`), 15000);
-  if (!/^jamr:\/\/127\.0\.0\.1:3031\/[a-z0-9]{10}\/[A-Z0-9]{5}\/[A-Za-z0-9_-]{43}$/.test(invite)) throw new Error('bad relay invite: ' + invite);
+  if (!invite.startsWith(`jamr://${RELAY}/`) || !/\/[a-z0-9]{10}\/[A-Z0-9]{5}\/[A-Za-z0-9_-]{43}$/.test(invite)) throw new Error('bad relay invite: ' + invite);
   const alt = await A.ev(`document.querySelector('#invite-alt').textContent`);
   step(`host started Jam through the relay → invite ${invite.replace(/\/[A-Za-z0-9_-]{43}$/, '/<비밀키>')}`);
   console.log('  ' + alt.replace(/\/[A-Za-z0-9_-]{43}/g, '/<비밀키>'));
