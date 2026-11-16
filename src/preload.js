@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('jamApp', {
   // 창
   toggleFullscreen: () => ipcRenderer.send('window:fullscreen'),
   onFullscreen: (cb) => ipcRenderer.on('fullscreen', (_e, on) => cb(on)),
+  // 확장 프로그램 (chrome.tabs)
+  onExtCreateTab: (cb) => ipcRenderer.on('ext:create-tab', (_e, req) => cb(req)),
+  extTabCreated: (reqId, wcId) => ipcRenderer.send('ext:tab-created', { reqId, wcId }),
+  onExtSelectTab: (cb) => ipcRenderer.on('ext:select-tab', (_e, wcId) => cb(wcId)),
+  onExtCloseTab: (cb) => ipcRenderer.on('ext:close-tab', (_e, wcId) => cb(wcId)),
+  extTabActivated: (wcId) => ipcRenderer.send('ext:tab-activated', wcId),
   // 자동 업데이트
   appInfo: () => ipcRenderer.invoke('app:info'),
   checkUpdate: () => ipcRenderer.send('update:check'),

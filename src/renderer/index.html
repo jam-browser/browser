@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http: https:; connect-src ws: wss:;" />
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http: https: crx:; connect-src ws: wss:;" />
   <title>Jam Browser</title>
   <link rel="stylesheet" href="styles.css" />
   <style id="user-css"></style>
@@ -33,6 +33,10 @@
         <button id="zoom-ind" type="button" class="url-chip" title="원래 크기로 (Ctrl+0)" hidden>100%</button>
         <button id="bookmark-star" type="button" class="url-star" title="북마크 (Ctrl+D)" hidden>☆</button>
       </form>
+      <div id="ext-bar">
+        <browser-action-list id="ext-actions" partition="persist:jam" alignment="bottom left"></browser-action-list>
+        <button id="ext-store" class="icon-btn" title="확장 프로그램 추가 (Chrome 웹 스토어). 아이콘을 우클릭하면 삭제할 수 있어요">🧩</button>
+      </div>
       <button id="add-to-queue" class="text-btn" title="지금 페이지를 Jam 대기열에 추가" disabled>＋ 대기열</button>
       <div class="pop-wrap">
         <button id="downloads-btn" class="icon-btn" title="다운로드">⬇<span id="downloads-badge" class="badge" hidden></span></button>

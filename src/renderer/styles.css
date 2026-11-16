@@ -205,6 +205,10 @@ code { font-family: Consolas, "Cascadia Mono", monospace; }
 /* ---------- 다운로드 ---------- */
 .pop-wrap { position: relative; }
 #downloads-btn { position: relative; }
+#ext-bar { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+#ext-actions { display: flex; align-items: center; }
+#ext-actions::part(action) { width: 28px; height: 28px; border-radius: 50%; background-color: transparent; }
+#ext-actions::part(action):hover { background-color: var(--bg-3); }
 .badge { position: absolute; top: -2px; right: -4px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-size: 10px; font-weight: 800; line-height: 16px; }
 .popover {
   display: none; position: absolute; right: 0; top: 38px; width: 380px; max-height: 70vh; overflow-y: auto; z-index: 50;

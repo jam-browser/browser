@@ -8,6 +8,7 @@
   "main": "src/main.js",
   "private": true,
   "scripts": {
+    "postinstall": "node scripts/build-toolbar-preload.js",
     "start": "electron .",
     "test": "node test/sync-test.js && node test/relay-test.js",
     "icon": "electron scripts/make-icon.js",
@@ -15,6 +16,8 @@
     "release": "electron-builder --win --publish always"
   },
   "dependencies": {
+    "electron-chrome-extensions": "^4.10.0",
+    "electron-chrome-web-store": "^0.13.0",
     "electron-updater": "^6.8.11",
     "ws": "^8.23.0"
   },
