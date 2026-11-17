@@ -15,6 +15,7 @@ const { WebSocketServer } = require('ws');
 const { sameSite, isSensitiveUrl } = require('../shared/site');
 const { deriveKeys, checkProof, seal, open, C2S, S2C } = require('../shared/jam-crypto');
 const ID = require('../shared/identity');
+const PAIR = require('../shared/pairing');
 
 // 입장 방식: approval = 링크 + 호스트 승인(기본) · friends = 링크를 가진 친구만(자동 입장) · open = 링크만 있으면 자유 입장
 const ACCESS = new Set(['approval', 'friends', 'open']);
@@ -28,6 +29,18 @@ const APPROVAL_TIMEOUT = 120000; // 호스트 승인 대기 2분
 const RESUME_TTL = 5 * 60e3; // 끊긴 뒤 5분 안에는 승인 없이 복귀
 const RATE_PER_SEC = 100;
 const RATE_BURST = 200;
+const PAIR_TIMEOUT = 30000; // 페어링: 키 교환 뒤 요청까지
+const TICKET_TTL = 60e3; // 페어링으로 받은 일회용 입장권 유효 시간
+
+// 같은 네트워크(사설 · 링크 로컬 · 이 PC) 주소인지. 근처 페어링은 여기서 온 직접 연결만 받는다 (중계 서버 경유 X)
+function isPrivateIp(raw) {
+  const ip = String(raw || '').replace(/^::ffff:/, '');
+  if (ip.startsWith('relay:')) return false;
+  if (/^(10\.|127\.|192\.168\.|169\.254\.)/.test(ip)) return true;
+  const m = /^172\.(\d+)\./.exec(ip);
+  if (m && +m[1] >= 16 && +m[1] <= 31) return true;
+  return ip === '::1' || /^(fc|fd|fe80)/i.test(ip);
+}
 
 const COLORS = ['#2ee6a6', '#ff6b6b', '#4dabf7', '#ffd43b', '#cc5de8', '#ff922b', '#20c997', '#f06595'];
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -176,7 +189,9 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
   function sendJoinRequests(room) {
     const host = hostOf(room);
     if (!host) return;
-    for (const p of room.pending.values()) send(host.ws, { type: 'join-request', id: p.id, name: p.name, ip: p.ip, fp: p.fp, friend: p.friend });
+    for (const p of room.pending.values()) {
+      send(host.ws, { type: 'join-request', id: p.id, name: p.name, ip: p.ip, fp: p.fp, friend: p.friend, pair: !!p.pair, sas: p.sas || null });
+    }
   }
 
   wss.on('connection', (ws, req) => {
@@ -188,6 +203,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     let room = null;
     let me = null;
     let pending = null; // { room, entry } : 호스트 승인 대기 중
+    let pairState = null; // 근처 페어링 중: { target, th, key, sas }
     let tokens = RATE_BURST;
     let lastRefill = Date.now();
     let drops = 0;
@@ -195,7 +211,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     // 일회용 nonce: 참여자는 이 값에 비밀키로 서명해서 "키를 안다"는 것만 증명한다 (키 자체는 전송 안 함)
     const nonce = crypto.randomBytes(16).toString('base64url');
     send(ws, { type: 'hello', nonce, v: 1 });
-    const authTimer = setTimeout(() => !ws.keys && ws.close(), AUTH_TIMEOUT);
+    let authTimer = setTimeout(() => !ws.keys && ws.close(), AUTH_TIMEOUT);
 
     function deny(code, message) {
       send(ws, { type: 'error', code, message });
@@ -237,6 +253,8 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         const target = {
           code: makeCode(rooms),
           keys,
+          secret: String(msg.secret), // 근처 페어링으로 수락한 사람에게만 (페어링 키로 암호화해서) 건네준다
+          tickets: new Map(), // 페어링 수락 → 일회용 입장권
           hostId: null,
           members: new Map(),
           pending: new Map(),
@@ -265,6 +283,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       // 이름·재접속 토큰은 방 키로 암호화해서 온다 (중계 서버가 이름을 볼 수 없게). 예전 방식(평문)도 받아준다
       let resumeToken = typeof msg.resume === 'string' ? msg.resume : null;
       let who = {};
+      let ticket = null;
       if (typeof msg.p === 'string') {
         let inner;
         try {
@@ -275,6 +294,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         }
         name = cleanText(inner.name, 24) || '익명';
         resumeToken = typeof inner.resume === 'string' ? inner.resume : null;
+        ticket = typeof inner.ticket === 'string' ? inner.ticket : null;
         // 브라우저 계정 신원: 이 연결의 nonce + 방 코드에 대한 서명이어야 한다 (사칭 · 재사용 방지)
         if (inner.id) {
           if (!ID.verifyJoin(inner.id.pub, inner.id.sig, nonce, target.code)) {
@@ -294,6 +314,12 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         target.resumes.delete(resumeToken);
         return enterRoom(target, name, 'join', who);
       }
+      // 근처 페어링에서 호스트가 이미 수락한 사람 (일회용)
+      const t = ticket && target.tickets.get(ticket);
+      if (t) {
+        target.tickets.delete(ticket);
+        if (t.exp > Date.now()) return enterRoom(target, name, 'join', who.fp ? who : t.who);
+      }
       const access = target.settings.access;
       if (access === 'friends') {
         if (!who.friend) {
@@ -304,6 +330,10 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       if (access === 'open') return enterRoom(target, name, 'join', who);
 
       // 호스트 승인 대기
+      return requestApproval(target, name, who, {}, () => enterRoom(target, name, 'join', who));
+    }
+
+    function requestApproval(target, name, who, extra, onAccept) {
       if (target.pending.size >= MAX_PENDING) return deny('busy', '참여 요청이 너무 많아요. 잠시 후 다시 시도하세요.');
       const entry = {
         id: `p${nextId++}`,
@@ -311,9 +341,10 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         ip: ip.replace(/^::ffff:/, ''),
         fp: who.fp || null,
         friend: !!who.friend,
+        ...extra,
         accept: () => {
           pending = null;
-          enterRoom(target, name, 'join', who);
+          onAccept();
         },
         reject: (reason) => {
           pending = null;
@@ -330,6 +361,60 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       pending = { room: target, entry };
       send(ws, { type: 'pending' });
       sendJoinRequests(target);
+    }
+
+    // ---------- 근처 페어링 (초대 링크 없이, 같은 네트워크에서) ----------
+    function pairStart(msg) {
+      if (pairState || ws.keys) return;
+      if (!isPrivateIp(ip)) return deny('forbidden', '근처 페어링은 같은 네트워크에서만 할 수 있어요.');
+      const target = rooms.get(cleanText(msg.code, 10).toUpperCase());
+      if (!target) {
+        recordFailure(ip);
+        return deny('bad-invite', '초대 코드가 올바르지 않거나 Jam이 끝났어요.');
+      }
+      const eph = PAIR.newEphemeral();
+      const th = PAIR.transcript(String(msg.epk || ''), eph.pub, nonce, target.code);
+      const d = PAIR.derive(eph.priv, msg.epk, th);
+      if (!d) return deny('bad-request', '잘못된 요청이에요.');
+      pairState = { target, th, key: d.key, sas: d.sas };
+      clearTimeout(authTimer);
+      authTimer = setTimeout(() => !ws.keys && !pending && ws.close(), PAIR_TIMEOUT);
+      send(ws, { type: 'pair-hello', epk: eph.pub });
+    }
+
+    function pairRequest(msg) {
+      const ps = pairState;
+      if (!ps || ps.requested) return;
+      ps.requested = true;
+      const inner = PAIR.openBox(ps.key, msg.box);
+      if (!inner || typeof inner !== 'object') return deny('bad-request', '잘못된 요청이에요.');
+      const target = ps.target;
+      if (rooms.get(target.code) !== target) return deny('bad-invite', '초대 코드가 올바르지 않거나 Jam이 끝났어요.');
+      let who = {};
+      if (inner.id) {
+        if (!ID.verifyPair(inner.id.pub, inner.id.sig, ps.th)) return deny('bad-identity', '신원 확인에 실패했어요.');
+        who = { fp: ID.fingerprint(inner.id.pub) };
+        who.friend = target.allow.has(who.fp);
+      }
+      const name = cleanText(inner.name, 24) || '익명';
+      if (target.members.size + target.pending.size >= MAX_MEMBERS) return deny('full', 'Jam 인원이 가득 찼어요.');
+      // 수락 → 이 연결의 페어링 키로 초대 비밀키 + 일회용 입장권을 암호화해서 건넨다
+      const grant = () => {
+        const ticket = crypto.randomBytes(24).toString('base64url');
+        target.tickets.set(ticket, { who, exp: Date.now() + TICKET_TTL });
+        send(ws, { type: 'pair-ok', box: PAIR.sealBox(ps.key, { secret: target.secret, ticket }) });
+        ps.key.fill(0);
+        setTimeout(() => ws.close(), 2000);
+      };
+      clearTimeout(authTimer);
+      if (target.settings.access === 'friends') {
+        if (!who.friend) {
+          return deny('not-friend', '이 Jam 은 호스트의 친구만 들어올 수 있어요. 브라우저 계정에 로그인하고 호스트와 친구 코드를 주고받았는지 확인하세요.');
+        }
+        return grant(); // 친구는 서명으로 확인됐으니 바로
+      }
+      // 링크 없이 온 요청은 "자유 입장" 이어도 호스트가 확인 코드를 보고 수락해야 한다
+      return requestApproval(target, name, who, { pair: true, sas: ps.sas }, grant);
     }
 
     function leave() {
@@ -386,6 +471,8 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           return;
         }
         if (msg && (msg.type === 'create' || msg.type === 'join')) authenticate(msg);
+        else if (msg && msg.type === 'pair') pairStart(msg);
+        else if (msg && msg.type === 'pair-req') pairRequest(msg);
         return;
       }
       if (!isBinary) return; // 인증 뒤에는 암호화된 메시지만 받는다
@@ -596,7 +683,10 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
   // 끊긴 연결 정리 + 만료된 재접속 토큰/차단 기록 정리
   const heartbeat = setInterval(() => {
     const now = Date.now();
-    for (const r of rooms.values()) for (const [t, v] of r.resumes) if (v.expires < now) r.resumes.delete(t);
+    for (const r of rooms.values()) {
+      for (const [t, v] of r.resumes) if (v.expires < now) r.resumes.delete(t);
+      for (const [t, v] of r.tickets) if (v.exp < now) r.tickets.delete(t);
+    }
     for (const [ip, f] of failures) if (f.blockedUntil < now && now - f.first > 10 * 60e3) failures.delete(ip);
     for (const ws of wss.clients) {
       if (!ws.isAlive) {
@@ -635,7 +725,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
   });
 }
 
-module.exports = { createJamServer, isWebUrl };
+module.exports = { createJamServer, isWebUrl, isPrivateIp };
 
 if (require.main === module) {
   const port = Number(process.argv[2] || process.env.PORT || 3030);

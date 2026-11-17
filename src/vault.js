@@ -439,7 +439,17 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     powerMonitor.on('suspend', () => lock('suspend'));
   }
 
-  return { isUnlocked: () => !!session, lock };
+  return {
+    isUnlocked: () => !!session,
+    lock,
+    // 근처 페어링: 그 연결의 기록(th, SHA-256 hex)에만 서명. 잠겨 있으면 null (익명 페어링)
+    signPair(th) {
+      if (!session || !/^[0-9a-f]{64}$/.test(String(th))) return null;
+      const { pub, priv } = session.doc.identity;
+      lastActivity = Date.now();
+      return { pub, sig: ID.signPair(priv, th) };
+    },
+  };
 }
 
 module.exports = { setupVault };

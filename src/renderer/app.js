@@ -148,6 +148,15 @@ function throttle(fn, ms) {
     }
   };
 }
+function debounce(fn, ms) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  };
+}
+
+let nearby = []; // 근처(같은 네트워크)에서 들리는 Jam 목록 (main 의 UDP 3032 스캐너)
 
 // ======================================================================
 // 탭 관리
@@ -561,6 +570,7 @@ async function connect(serverUrl, hello, { secret, onPending } = {}) {
               // 참여: 비밀키는 보내지 않고 증명(proof)만. 이름·재접속 토큰은 암호화해서 (중계 서버도 못 봄)
               // 브라우저 계정에 로그인되어 있으면 이 연결의 nonce + 방 코드에 서명해 신원을 증명 (친구 확인용, 공개 키 + 서명만)
               const inner = { name: hello.name, resume: hello.resume || null };
+              if (hello.ticket) inner.ticket = hello.ticket; // 근처 페어링에서 호스트가 수락한 일회용 입장권
               const id = window.account ? await account.signJoin(msg.nonce, hello.code) : null;
               if (id) inner.id = id;
               const sealed = new Uint8Array(await sealMsg(keys, inner));
@@ -668,13 +678,14 @@ async function startJam() {
   btn.disabled = true;
   btn.textContent = 'Jam 준비 중…';
   try {
-    // 항상 내 PC가 호스트(서버). 중계 서버 주소가 있으면 인터넷 친구용 길도 연다
-    const relayInput = $('#server-url').value.trim();
-    try { localStorage.setItem('jam-server', relayInput); } catch {}
-    const relayUrl = relayInput ? normalizeRelay(relayInput) : null;
-    if (relayInput && !relayUrl) throw new Error('중계 서버 주소 형식이 올바르지 않아요 (예: relay.example.com:3031)');
-    const { port, addresses, relay } = await jamApp.startHost({ relayUrl });
+    // 항상 내 PC가 호스트(서버). 중계 서버 주소 목록이 있으면 위에서부터 시도해 인터넷 친구용 길도 연다
+    const { urls: relayUrls, bad } = relayList();
+    if (bad.length) throw new Error(`중계 서버 주소 형식이 올바르지 않아요: ${bad.join(', ')} (예: relay.example.com:3031)`);
+    const { port, addresses, relay } = await jamApp.startHost({ relayUrls });
     jam.hosting = true;
+    if (relay?.route && relay.skipped?.length) {
+      toast(`⚠️ ${relay.skipped.map((s) => prettyRelay(s.url)).join(', ')} 에 연결하지 못해서 ${prettyRelay(relay.url)} 를 썼어요`);
+    }
     const serverUrl = `ws://127.0.0.1:${port}`;
     const ips = addresses.length ? addresses : ['127.0.0.1'];
     let inviteHost = `jam://${ips[0]}:${port}`;
@@ -684,7 +695,7 @@ async function startJam() {
       inviteHost = `${u.protocol === 'wss:' ? 'jamrs' : 'jamr'}://${u.host}/${relay.route}`;
       altHosts = ips.map((ip) => `jam://${ip}:${port}`); // 같은 네트워크 친구는 직접 연결도 가능
     } else if (relay?.error) {
-      toast(`⚠️ 중계 서버에 연결하지 못했어요 (${relay.error}). 같은 네트워크용 초대 코드만 만들어요`);
+      toast(`⚠️ 중계 서버에 연결하지 못했어요 (${relay.error}). 같은 네트워크용 초대 코드만 만들고, 근처(같은 네트워크)에 Jam 을 알려요`);
     }
 
     const access = account.accessMode();
@@ -734,27 +745,28 @@ async function joinJam() {
   const btn = $('#join-jam');
   btn.disabled = true;
   btn.textContent = '연결 중…';
+  const onPending = () => {
+    btn.textContent = '호스트의 승인을 기다리는 중…';
+    toast('참여 요청을 보냈어요. 호스트가 수락하면 들어가요');
+  };
+  const hello = { type: 'join', name, code: inv.code };
   try {
-    const { ws, welcome, keys } = await connect(
-      inv.server,
-      { type: 'join', name, code: inv.code },
-      {
-        secret: inv.secret,
-        onPending: () => {
-          btn.textContent = '호스트의 승인을 기다리는 중…';
-          toast('참여 요청을 보냈어요. 호스트가 수락하면 들어가요');
-        },
+    let server = inv.server;
+    let res;
+    try {
+      res = await connect(server, hello, { secret: inv.secret, onPending });
+    } catch (err) {
+      // 서버(중계 · 예전 IP)에 닿지 않으면: 같은 방 코드를 근처(같은 네트워크)에서 찾아 호스트에 바로 연결
+      const near = ['timeout', 'closed', 'bad-url'].includes(err.code) && nearby.find((x) => x.code === inv.code);
+      if (!near) {
+        if (['timeout', 'closed'].includes(err.code) && nearby.length) err.message += ' · 근처 Jam 목록도 확인해 보세요';
+        throw err;
       }
-    );
-    jam.serverUrl = inv.server;
-    jam.secret = inv.secret;
-    const tab = createTab(welcome.room.current?.url || ui.homeUrl());
-    enterJam(ws, welcome, tab, keys);
-    jam.invite = $('#invite').value.trim();
-    $('#invite-alt').textContent = '';
-    renderJam();
-    const hostName = welcome.room.members.find((m) => m.id === welcome.room.hostId)?.name || '친구';
-    toast(`${hostName}님의 Jam에 참여했어요`);
+      server = nearbyServer(near);
+      toast(`서버에 연결할 수 없어서 같은 네트워크의 ${near.name}님 PC(${near.ip})로 바로 연결할게요`);
+      res = await connect(server, hello, { secret: inv.secret, onPending });
+    }
+    finishJoin(res, server, inv.secret, $('#invite').value.trim());
   } catch (err) {
     console.error(err);
     toast(err.message || 'Jam에 참여하지 못했어요');
@@ -764,6 +776,134 @@ async function joinJam() {
     btn.textContent = '참여하기';
   }
 }
+
+function finishJoin({ ws, welcome, keys }, server, secret, inviteText) {
+  jam.serverUrl = server;
+  jam.secret = secret;
+  const tab = createTab(welcome.room.current?.url || ui.homeUrl());
+  enterJam(ws, welcome, tab, keys);
+  jam.invite = inviteText;
+  $('#invite-alt').textContent = '';
+  renderJam();
+  const hostName = welcome.room.members.find((m) => m.id === welcome.room.hostId)?.name || '친구';
+  toast(`${hostName}님의 Jam에 참여했어요`);
+}
+
+// ======================================================================
+// 중계 서버 주소 목록 · 근처 찾기 · 근처 페어링
+// ======================================================================
+// 한 줄(또는 쉼표)에 하나. 위에서부터 시도
+function relayList() {
+  const raw = $('#server-url').value;
+  try { localStorage.setItem('jam-server', raw); } catch {}
+  const urls = [];
+  const bad = [];
+  for (const s of raw.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean).slice(0, 8)) {
+    const u = normalizeRelay(s);
+    if (u) urls.includes(u) || urls.push(u);
+    else bad.push(s);
+  }
+  return { urls, bad };
+}
+const prettyRelay = (u) => String(u).replace(/^wss?:\/\//, '');
+
+let relayProbeSeq = 0;
+async function probeRelayList() {
+  const box = $('#relay-status');
+  const { urls, bad } = relayList();
+  const seq = ++relayProbeSeq;
+  if (!urls.length && !bad.length) return box.replaceChildren();
+  box.replaceChildren(...urls.map((u) => el('li', { class: 'muted' }, `… ${prettyRelay(u)} 확인 중`)), ...bad.map((b) => el('li', { class: 'bad' }, `✕ ${b} · 주소 형식이 올바르지 않아요`)));
+  const res = await jamApp.probeRelays(urls).catch(() => []);
+  if (seq !== relayProbeSeq) return;
+  box.replaceChildren(
+    ...res.map((r, i) =>
+      el(
+        'li',
+        { class: r.ok ? 'ok' : 'bad' },
+        r.ok ? `● ${prettyRelay(r.url)} · v${r.version} · ${r.ms}ms${i === res.findIndex((x) => x.ok) ? ' · 이 주소를 써요' : ''}` : `○ ${prettyRelay(r.url)} · 연결 안 됨 (${r.error})`
+      )
+    ),
+    ...bad.map((b) => el('li', { class: 'bad' }, `✕ ${b} · 주소 형식이 올바르지 않아요`))
+  );
+}
+$('#server-url').addEventListener('input', debounce(probeRelayList, 700));
+$('#relay-details').addEventListener('toggle', (e) => e.target.open && probeRelayList());
+$('#relay-recheck').addEventListener('click', probeRelayList);
+
+// 근처(같은 네트워크) Jam
+const ACCESS_SHORT = { approval: '수락하면 입장', friends: '친구만', open: '자유 입장' };
+const nearbyServer = (n) => `ws://${n.ip.includes(':') ? `[${n.ip}]` : n.ip}:${n.port}`;
+function renderNearby() {
+  const list = nearby.filter((n) => !(jam.active && jam.room?.code === n.code));
+  $('#nearby-empty').hidden = list.length > 0;
+  $('#nearby-list').replaceChildren(
+    ...list.map((n) =>
+      el(
+        'li',
+        { class: 'nearby-item' },
+        el('div', { class: 'info' }, el('div', { class: 'name' }, `📡 ${n.name}님의 Jam`), el('div', { class: 'muted small' }, `${n.n}명 · ${ACCESS_SHORT[n.access]} · ${n.ip}`)),
+        el('button', { class: 'mini-btn active', disabled: jam.active || null, onclick: () => joinNearby(n) }, '참여')
+      )
+    )
+  );
+}
+jamApp.onNearby((list) => {
+  nearby = Array.isArray(list) ? list : [];
+  renderNearby();
+});
+jamApp.nearbyList().then((l) => {
+  nearby = l || [];
+  renderNearby();
+});
+
+// 링크 없이 근처 Jam 에 들어가기: 6자리 확인 코드를 호스트와 비교 → 호스트 수락 → 평소처럼 참여
+async function joinNearby(n) {
+  if (jam.active) return;
+  const name = myName();
+  if (!name) return;
+  const d = $('#pair-dialog');
+  $('#pair-host').textContent = `${n.name}님의 Jam (${n.ip})`;
+  $('#pair-sas').textContent = '··· ···';
+  $('#pair-status').textContent = '연결 중…';
+  if (!d.open) d.showModal();
+  try {
+    const r = await jamApp.pairNearby({ ip: n.ip, port: n.port, code: n.code, name });
+    if (r?.error) throw Object.assign(new Error(r.error), { code: r.code });
+    $('#pair-status').textContent = '수락됐어요! 들어가는 중…';
+    const server = nearbyServer(n);
+    const res = await connect(server, { type: 'join', name, code: n.code, ticket: r.ticket }, { secret: r.secret });
+    d.close();
+    finishJoin(res, server, r.secret, `jam://${n.ip.includes(':') ? `[${n.ip}]` : n.ip}:${n.port}/${n.code}/${r.secret}`);
+  } catch (err) {
+    if (err.code !== 'cancelled') toast(err.message || '근처 Jam 에 들어가지 못했어요');
+    if (d.open) d.close();
+    if (jam.active && !jam.ws) cleanupJam();
+  }
+}
+jamApp.onPairSas((sas) => {
+  $('#pair-sas').textContent = `${String(sas).slice(0, 3)} ${String(sas).slice(3)}`;
+  $('#pair-status').textContent = '호스트 화면에 보이는 확인 코드가 이 코드와 같은지 호스트에게 확인해 달라고 하세요';
+});
+jamApp.onPairPending(() => {
+  $('#pair-status').textContent = '호스트가 확인 코드를 보고 수락하길 기다리는 중… (2분)';
+});
+$('#pair-cancel').addEventListener('click', () => {
+  jamApp.cancelPair();
+  $('#pair-dialog').close();
+});
+
+// 호스트: 근처에 이 Jam 보이기 (기본 켬)
+let nearbyVisible = true;
+try { nearbyVisible = localStorage.getItem('jam-nearby-visible') !== '0'; } catch {}
+jamApp.setNearbyVisible(nearbyVisible);
+$('#nearby-visible').checked = nearbyVisible;
+$('#nearby-visible').addEventListener('change', (e) => {
+  nearbyVisible = e.target.checked;
+  try { localStorage.setItem('jam-nearby-visible', nearbyVisible ? '1' : '0'); } catch {}
+  jamApp.setNearbyVisible(nearbyVisible);
+  toast(nearbyVisible ? '같은 네트워크의 사람들에게 이 Jam 이 보여요 (들어오려면 수락 · 확인 코드 필요)' : '같은 네트워크에 이 Jam 을 알리지 않아요');
+});
 
 function adoptWelcome(ws, welcome, keys) {
   jam.ws = ws;
@@ -1202,7 +1342,9 @@ function renderJam() {
   updateToolbar();
   renderTabs();
   renderMinimap();
+  renderNearby();
   if (!jam.active) return;
+  $('#nearby-row').hidden = !jam.isHost();
 
   $('#room-code').textContent = jam.room.code;
   $('#invite-text').textContent = jam.invite;
@@ -1539,6 +1681,15 @@ function renderRequests() {
           el('b', {}, r.name),
           '님이 Jam에 들어오려고 해요',
           el('div', { class: 'muted small' }, String(r.ip).startsWith('relay:') ? `인터넷(중계 서버)으로 접속 · ${r.ip.slice(6)}` : `같은 네트워크에서 접속 · ${r.ip}`),
+          r.pair
+            ? el(
+                'div',
+                { class: 'req-sas' },
+                '📡 초대 링크 없이 근처에서 요청 · 확인 코드 ',
+                el('b', {}, `${String(r.sas).slice(0, 3)} ${String(r.sas).slice(3)}`),
+                el('div', { class: 'muted small' }, '참여자 화면의 코드와 같을 때만 수락하세요. 다르면 누군가 중간에서 가로채는 중일 수 있어요')
+              )
+            : null,
           r.friend
             ? el('div', { class: 'req-id friend' }, `⭐ 내 친구 ${account.friendName(r.fp) || ''} (서명으로 본인 확인됨)`)
             : r.fp
