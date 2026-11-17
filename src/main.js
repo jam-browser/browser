@@ -1,17 +1,39 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, Menu, clipboard, session } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, clipboard, session, webContents, safeStorage, powerMonitor } = require('electron');
+const { ElectronChromeExtensions } = require('electron-chrome-extensions');
+const { installChromeWebStore, uninstallExtension } = require('electron-chrome-web-store');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { createJamServer } = require('../server/jam-server');
 const { startRelayTunnel } = require('../server/relay-tunnel');
+const { startBeacon, startScanner } = require('../server/nearby');
+const { pairWithHost } = require('../server/pair-client');
+const { isPrivateIp } = require('../server/jam-server');
 const { sameSite } = require('../shared/site');
+const { setupVault } = require('./vault');
 
 const DEFAULT_PORT = 3030;
 let mainWindow = null;
 let jamServer = null;
 let relayTunnel = null; // 인터넷용 중계 서버로 가는 터널
 let relayKey = null;
+let vaultApi = null;
+let beacon = null; // 근처 알림 (호스트일 때)
+let scanner = null; // 근처 Jam 찾기
+let nearbyVisible = true;
+let nearbyList = [];
+let pairing = null; // 진행 중인 근처 페어링
+let pendingCapture = null; // 화면 미러링: 앱이 방금 요청한 탭 캡처 { wcId, until }
+const beaconId = crypto.randomBytes(12).toString('base64url');
+
+// 웹사이트에는 일반 Chromium 브라우저로 보이게 한다.
+// 기본 UA 에 붙는 "Electron/x" · "jam-browser/x" 때문에 Google 로그인 등 일부 사이트가 막는다.
+// 버전도 실제 Chrome 처럼 주 버전만 남긴다 (Chrome/156.0.0.0).
+const CHROME_UA = app.userAgentFallback
+  .replace(/\s+(Electron|jam-browser|Jam ?Browser)\/\S+/gi, '')
+  .replace(/Chrome\/(\d+)\.[\d.]+/, 'Chrome/$1.0.0.0');
+app.userAgentFallback = CHROME_UA;
 
 // Jam 탭의 webContents id → 다른 사이트 이동이 잠겨 있는지
 const lockedJamTabs = new Set();
@@ -32,9 +54,12 @@ function lanAddresses() {
 }
 
 function createWindow() {
+  // 자동 테스트용: 창을 화면 밖에 띄우고 포커스를 뺏지 않는다 (작업 중인 화면을 가리지 않게)
+  const offscreen = process.env.JAM_TEST_OFFSCREEN === '1';
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
+    ...(offscreen ? { x: -6000, y: 0, show: false } : {}),
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#121212',
@@ -46,6 +71,7 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       webviewTag: true,
+      ...(offscreen ? { backgroundThrottling: false } : {}),
     },
   });
   // Jam 테스트 환경(npm run jam)에서는 창 제목에 [host] · [guest] 를 붙여 구분한다
@@ -54,6 +80,10 @@ function createWindow() {
     mainWindow.setTitle(`Jam Browser [${devInstance}]`);
     mainWindow.on('page-title-updated', (e) => e.preventDefault());
   }
+  // 웹페이지 탭(webview)이 붙을 때마다 확장 프로그램(chrome.tabs 등)이 알 수 있게 등록
+  const win = mainWindow;
+  win.webContents.on('did-attach-webview', (_e, wc) => extensions?.addTab(wc, win));
+  if (offscreen) mainWindow.showInactive();
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('closed', () => (mainWindow = null));
   mainWindow.on('enter-full-screen', () => mainWindow.webContents.send('fullscreen', true));
@@ -67,6 +97,8 @@ function shortcutFor(input) {
   const ctrl = input.control || input.meta;
   if (ctrl && input.shift && key === 't') return 'reopen-tab';
   if (ctrl && input.shift && key === 'b') return 'toggle-bookmarks';
+  if (ctrl && input.shift && key === 'l') return 'lock';
+  if (ctrl && input.shift && key === 'p') return 'vault';
   if (ctrl && key === 'd') return 'bookmark';
   if (ctrl && key === 'h') return 'history';
   if (ctrl && key === 'f') return 'find';
@@ -84,6 +116,8 @@ function shortcutFor(input) {
   if (input.alt && key === 'arrowleft') return 'back';
   if (input.alt && key === 'arrowright') return 'forward';
   if (key === 'f12') return 'devtools';
+  // Esc 를 길게 누르면(자동 반복) 화면 미러링 조작 권한을 모두 회수
+  if (key === 'escape' && input.isAutoRepeat) return 'revoke-control';
   return null;
 }
 
@@ -151,17 +185,23 @@ ipcMain.handle('jam:host-start', async (_e, opts = {}) => {
     });
   }
   let relay = null;
-  const relayUrl = typeof opts.relayUrl === 'string' && /^wss?:\/\/[^\s/]+$/i.test(opts.relayUrl) ? opts.relayUrl : null;
-  if (relayUrl) {
-    if (relayTunnel) relayTunnel.close();
-    relayTunnel = null;
+  // 중계 서버 주소 목록: 위에서부터 시도해서 처음 열리는 곳을 쓴다 (예전 방식 relayUrl 하나도 받음)
+  const isWs = (u) => typeof u === 'string' && /^wss?:\/\/[^\s/]+$/i.test(u);
+  const urls = [...(Array.isArray(opts.relayUrls) ? opts.relayUrls : []), opts.relayUrl].filter(isWs).slice(0, 8);
+  if (relayTunnel) relayTunnel.close();
+  relayTunnel = null;
+  const errors = [];
+  for (const relayUrl of urls) {
     try {
       relayTunnel = await startRelayTunnel({ relayUrl, localPort: jamServer.port, relayKey, log: (m) => console.log(`[relay] ${m}`) });
-      relay = { url: relayUrl, route: relayTunnel.route };
+      relay = { url: relayUrl, route: relayTunnel.route, skipped: errors };
+      break;
     } catch (err) {
-      relay = { error: err.message };
+      errors.push({ url: relayUrl, error: err.message });
     }
   }
+  if (!relay && errors.length) relay = { error: errors.map((e) => e.error).join(' / '), skipped: errors };
+  updateBeacon();
   return { port: jamServer.port, addresses: lanAddresses(), relay };
 });
 
@@ -170,11 +210,233 @@ ipcMain.handle('jam:host-stop', async () => {
     relayTunnel.close();
     relayTunnel = null;
   }
+  if (beacon) {
+    beacon.close();
+    beacon = null;
+  }
   if (jamServer) {
     const s = jamServer;
     jamServer = null;
     await s.close();
   }
+});
+
+// ---------- 중계 서버 상태 확인 ----------
+// ws://주소:포트 → http://주소:포트/version 을 짧게 확인 (앱 화면은 http 요청을 못 하므로 여기서)
+function probeRelay(wsUrl, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    let u;
+    try {
+      u = new URL(wsUrl.replace(/^ws/i, 'http'));
+    } catch {
+      return resolve({ url: wsUrl, ok: false, error: 'bad-url' });
+    }
+    const mod = u.protocol === 'https:' ? require('https') : require('http');
+    const started = Date.now();
+    const req = mod.get({ hostname: u.hostname, port: u.port || undefined, path: '/version', timeout: timeoutMs }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (d) => (body += d.slice(0, 64)));
+      res.on('end', () => {
+        const version = body.trim().slice(0, 32);
+        const ok = res.statusCode === 200 && /^\d+\.\d+\.\d+/.test(version);
+        resolve({ url: wsUrl, ok, version: ok ? version : null, ms: Date.now() - started, error: ok ? null : `HTTP ${res.statusCode}` });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', (e) => resolve({ url: wsUrl, ok: false, error: e.message === 'timeout' ? 'timeout' : e.code || e.message }));
+  });
+}
+const fromApp = (e) => mainWindow && e.sender === mainWindow.webContents;
+ipcMain.handle('relay:probe', async (e, urls) => {
+  if (!fromApp(e) || !Array.isArray(urls)) return [];
+  return Promise.all(urls.filter((u) => typeof u === 'string' && /^wss?:\/\/[^\s/]+$/i.test(u)).slice(0, 8).map((u) => probeRelay(u)));
+});
+
+// ---------- 화면 미러링: 그 탭(webview)만 잡는 화면 소스 ID ----------
+// 앱 화면 · 다른 탭 · 바탕화면은 잡히지 않는다. 오디오는 앱에서 요청하지 않는다
+ipcMain.handle('mirror:source-id', (e, wcId) => {
+  if (!fromApp(e)) throw new Error('forbidden');
+  const { webContents } = require('electron');
+  const wc = webContents.fromId(Number(wcId));
+  if (!wc || wc.getType() !== 'webview' || wc.hostWebContents !== mainWindow.webContents) throw new Error('탭을 찾을 수 없어요');
+  pendingCapture = { wcId: wc.id, until: Date.now() + 10000 }; // 이 탭에 대한 캡처 요청 한 번만 허락 (권한 처리기에서 확인)
+  mirrorWcId = wc.id; // 원격 조작은 이 탭에만 들어간다
+  return wc.getMediaSourceId(mainWindow.webContents);
+});
+ipcMain.handle('mirror:end', (e) => {
+  if (!fromApp(e)) return;
+  mirrorWcId = null;
+});
+
+// ---------- 화면 미러링: 참여자의 조작 넣기 ----------
+// 운영체제 입력(SendInput)이 아니라 Chromium 안의 입력 이벤트로 미러링 중인 그 탭에만 들어간다.
+// → 다른 프로그램(키로거 등) · 앱 화면 · 다른 탭은 이 입력을 받지도 보지도 못한다.
+// 누르기 · 떼기 · 키는 넣기 전에 그 탭 안 스크립트에 "지금 그 자리에 뭐가 있나"를 물어보고,
+// 로그인 · 결제 · 계정 · 개인정보 쪽 버튼이나 비밀 입력 칸이면 넣지 않는다 (shared/mirror.js 의 remoteVerdict).
+const MIRROR = require('../shared/mirror');
+let mirrorWcId = null;
+const remoteMarks = new Map(); // wcId → Map(출처 → 마지막 원격 입력 시각)
+const REMOTE_TAINT_MS = 30 * 60e3;
+const probes = new Map();
+let probeSeq = 0;
+const originOfUrl = (u) => {
+  try {
+    const x = new URL(u);
+    return /^https?:$/.test(x.protocol) ? x.origin : x.protocol;
+  } catch {
+    return '';
+  }
+};
+function markRemote(wc) {
+  let m = remoteMarks.get(wc.id);
+  if (!m) remoteMarks.set(wc.id, (m = new Map()));
+  m.set(originOfUrl(wc.getURL()), Date.now());
+}
+/** 이 탭 · 이 사이트에 최근 ms 안에 다른 컴퓨터의 입력이 들어왔나 (비밀번호 저장 제안 · 자동 입력을 막는 데 씀) */
+function remoteTouched(wcId, url, ms = REMOTE_TAINT_MS) {
+  const m = remoteMarks.get(wcId);
+  const at = m && m.get(originOfUrl(url));
+  return !!at && Date.now() - at < ms;
+}
+ipcMain.on('mirror:probe-result', (e, r) => {
+  const pr = probes.get(r && r.id);
+  if (!pr || e.sender.id !== pr.wcId) return;
+  probes.delete(r.id);
+  clearTimeout(pr.timer);
+  pr.resolve(r.d || null);
+});
+function probeTab(wc, q) {
+  return new Promise((resolve) => {
+    const id = ++probeSeq;
+    const timer = setTimeout(() => {
+      probes.delete(id);
+      resolve(null); // 답이 없으면 막는 쪽으로
+    }, 400);
+    probes.set(id, { wcId: wc.id, resolve, timer });
+    wc.send('mirror:probe', { id, ...q });
+  });
+}
+const INPUT_TYPES = new Set(['mouseMove', 'mouseDown', 'mouseUp', 'mouseWheel', 'keyDown', 'keyUp', 'char']);
+function cleanInput(ev) {
+  if (!ev || typeof ev !== 'object' || !INPUT_TYPES.has(ev.type)) return null;
+  const out = { type: ev.type };
+  if (ev.type.startsWith('mouse')) {
+    const x = Math.round(Number(ev.x));
+    const y = Math.round(Number(ev.y));
+    if (!(x >= 0 && x <= 16384 && y >= 0 && y <= 16384)) return null;
+    Object.assign(out, { x, y });
+    if (ev.type === 'mouseDown' || ev.type === 'mouseUp') {
+      out.button = ev.button === 'middle' ? 'middle' : 'left';
+      out.clickCount = Math.min(3, Math.max(1, Math.round(Number(ev.clickCount) || 1)));
+    }
+    if (ev.type === 'mouseWheel') {
+      out.deltaX = Math.max(-2000, Math.min(2000, Math.round(Number(ev.deltaX) || 0)));
+      out.deltaY = Math.max(-2000, Math.min(2000, Math.round(Number(ev.deltaY) || 0)));
+      out.canScroll = true;
+    }
+  } else {
+    const k = String(ev.keyCode || '');
+    if (ev.type === 'char' ? [...k].length !== 1 : !MIRROR.ELECTRON_KEYS.has(k)) return null;
+    out.keyCode = k;
+    out.modifiers = Array.isArray(ev.modifiers) && ev.modifiers.includes('shift') ? ['shift'] : [];
+  }
+  return out;
+}
+ipcMain.handle('mirror:input', async (e, ev, code) => {
+  if (!fromApp(e) || !mirrorWcId) return { ok: false, reason: 'off' };
+  const { webContents } = require('electron');
+  const wc = webContents.fromId(mirrorWcId);
+  if (!wc || wc.isDestroyed() || wc.getType() !== 'webview' || wc.hostWebContents !== mainWindow.webContents) return { ok: false, reason: 'off' };
+  const out = cleanInput(ev);
+  if (!out) return { ok: false, reason: 'bad' };
+  if (out.type !== 'mouseMove' && out.type !== 'mouseWheel') {
+    const d = await probeTab(wc, { kind: out.type, x: out.x, y: out.y });
+    const v = MIRROR.remoteVerdict(d, out.type, typeof code === 'string' ? code : '');
+    if (!v.ok) {
+      if (!wc.isDestroyed()) wc.send('mirror:disarm');
+      return v;
+    }
+  }
+  if (wc.isDestroyed()) return { ok: false, reason: 'off' };
+  markRemote(wc);
+  wc.sendInputEvent(out);
+  return { ok: true };
+});
+
+// ---------- 근처 찾기 (UDP 3032, 같은 네트워크) ----------
+function updateBeacon() {
+  // 호스트 서버가 켜져 있는 동안 (방이 생기면 그때부터 알림에 실림)
+  const hosting = !!jamServer;
+  if (!hosting || !nearbyVisible) {
+    if (beacon) beacon.close();
+    beacon = null;
+    return;
+  }
+  if (beacon) return;
+  beacon = startBeacon({
+    id: beaconId,
+    port: jamServer.port,
+    appVersion: app.getVersion(),
+    log: (m) => console.log(`[nearby] ${m}`),
+    getRooms: () => {
+      if (!jamServer || !nearbyVisible) return [];
+      return [...jamServer.rooms.values()].map((r) => ({
+        code: r.code,
+        name: r.members.get(r.hostId)?.name || '호스트',
+        access: r.settings.access,
+        n: r.members.size,
+      }));
+    },
+  });
+}
+function startNearbyScanner() {
+  if (scanner) return;
+  scanner = startScanner({
+    log: (m) => console.log(`[nearby] ${m}`),
+    onChange: (list) => {
+      nearbyList = list.filter((x) => x.id !== beaconId); // 내가 연 Jam 은 빼고
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('nearby', nearbyList);
+    },
+  });
+}
+ipcMain.handle('nearby:list', (e) => (fromApp(e) ? nearbyList : []));
+ipcMain.handle('nearby:visible', (e, on) => {
+  if (!fromApp(e)) return;
+  nearbyVisible = !!on;
+  updateBeacon();
+  return nearbyVisible;
+});
+// 링크 없이 근처 Jam 에 페어링: 확인 코드(6자리)는 앱 화면에 보내고, 끝나면 { secret, ticket } 을 돌려준다
+ipcMain.handle('nearby:pair', async (e, opts = {}) => {
+  if (!fromApp(e)) throw new Error('forbidden');
+  const ip = String(opts.ip || '');
+  const port = Number(opts.port);
+  const code = String(opts.code || '').toUpperCase();
+  if (!isPrivateIp(ip) || !/^[\d.:a-f]+$/i.test(ip) || !Number.isInteger(port) || port < 1 || port > 65535 || !/^[A-Z0-9]{4,8}$/.test(code)) {
+    throw new Error('근처 Jam 정보가 올바르지 않아요');
+  }
+  if (pairing) pairing.cancel();
+  const host = ip.includes(':') ? `[${ip}]` : ip;
+  pairing = pairWithHost({
+    url: `ws://${host}:${port}`,
+    code,
+    name: String(opts.name || '').slice(0, 24),
+    signer: async (th) => (vaultApi ? vaultApi.signPair(th) : null),
+    onSas: (sas) => e.sender.send('nearby:pair-sas', sas),
+    onPending: () => e.sender.send('nearby:pair-pending'),
+  });
+  const mine = pairing;
+  try {
+    return await mine.promise;
+  } catch (err) {
+    return { error: err.message, code: err.code };
+  } finally {
+    if (pairing === mine) pairing = null;
+  }
+});
+ipcMain.handle('nearby:pair-cancel', (e) => {
+  if (fromApp(e) && pairing) pairing.cancel();
 });
 
 // (최신 Electron 에서는 클립보드 함수가 Promise 를 돌려줄 수 있어 await 로 통일)
@@ -409,6 +671,95 @@ function setupAutoUpdate() {
 }
 ipcMain.handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged, update: updateState }));
 
+// ======================================================================
+// Chrome 확장 프로그램 (Chrome 웹 스토어에서 설치)
+// ======================================================================
+let extensions = null;
+let quitting = false;
+let extTabReq = 0;
+const pendingExtTabs = new Map(); // 요청 번호 → resolve
+
+// 확장 프로그램이 chrome.tabs.create 로 탭을 열 때: 앱 UI 에 새 탭을 만들게 하고 webContents 를 받는다
+function createTabForExtension(details) {
+  if (!mainWindow) return Promise.reject(new Error('창이 없어요'));
+  const reqId = ++extTabReq;
+  const win = mainWindow;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingExtTabs.delete(reqId);
+      reject(new Error('탭을 만들지 못했어요'));
+    }, 10000);
+    pendingExtTabs.set(reqId, (wcId) => {
+      clearTimeout(timer);
+      const wc = webContents.fromId(wcId);
+      if (wc) resolve([wc, win]);
+      else reject(new Error('탭을 찾지 못했어요'));
+    });
+    win.webContents.send('ext:create-tab', { reqId, url: details.url, active: details.active !== false });
+  });
+}
+ipcMain.on('ext:tab-created', (_e, { reqId, wcId }) => {
+  const done = pendingExtTabs.get(reqId);
+  pendingExtTabs.delete(reqId);
+  if (done) done(wcId);
+});
+ipcMain.on('ext:tab-activated', (_e, wcId) => {
+  const wc = webContents.fromId(wcId);
+  if (wc && extensions) extensions.selectTab(wc);
+});
+
+// 웹 스토어에서 "Chrome에 추가"를 누르면 한 번 더 묻는다
+async function confirmExtensionInstall({ localizedName, manifest, browserWindow }) {
+  const perms = [...(manifest.permissions || []), ...(manifest.host_permissions || [])]
+    .filter((p) => typeof p === 'string');
+  const allSites = perms.some((p) => p === '<all_urls>' || /^\*:\/\/\*\//.test(p) || /^https?:\/\/\*\//.test(p));
+  const lines = [
+    '확장 프로그램은 설치한 내 PC의 탭에서만 동작해요. 다른 Jam 참여자에게는 설치되지 않아요.',
+  ];
+  if (allSites) lines.push('⚠️ 이 확장 프로그램은 모든 웹사이트의 내용을 읽고 바꿀 수 있어요 (Jam 탭 포함).');
+  if (perms.length) lines.push('', '요청하는 권한: ' + perms.slice(0, 12).join(', ') + (perms.length > 12 ? ' …' : ''));
+  const { response } = await dialog.showMessageBox(browserWindow || mainWindow, {
+    type: 'question',
+    buttons: ['추가', '취소'],
+    defaultId: 1,
+    cancelId: 1,
+    title: '확장 프로그램 추가',
+    message: `"${localizedName}" 을(를) 추가할까요?`,
+    detail: lines.join('\n'),
+    noLink: true,
+  });
+  return { action: response === 0 ? 'allow' : 'deny' };
+}
+
+function setupExtensions(ses) {
+  extensions = new ElectronChromeExtensions({
+    session: ses,
+    createTab: createTabForExtension,
+    selectTab: (wc) => mainWindow?.webContents.send('ext:select-tab', wc.id),
+    removeTab: (wc) => mainWindow?.webContents.send('ext:close-tab', wc.id),
+  });
+  // 앱 UI 창(기본 세션)에 확장 아이콘 줄을 보여 준다
+  ElectronChromeExtensions.handleCRXProtocol(session.defaultSession);
+  session.defaultSession.registerPreloadScript({
+    id: 'jam-toolbar',
+    type: 'frame',
+    filePath: path.join(__dirname, 'generated', 'toolbar-preload.js'),
+  });
+  installChromeWebStore({ session: ses, beforeInstall: confirmExtensionInstall }).catch((e) =>
+    console.error('Chrome 웹 스토어 준비 실패:', e)
+  );
+  // 아이콘 우클릭 → "Remove extension" 은 지금 세션에서만 내리므로, 파일도 지워서 다시 켜도 안 돌아오게 한다
+  // (자동 업데이트도 내렸다가 바로 다시 올리므로, 몇 초 뒤에도 없을 때만 지운다)
+  ses.extensions.on('extension-unloaded', (_e, ext) => {
+    if (quitting) return;
+    setTimeout(() => {
+      if (quitting || ses.extensions.getExtension(ext.id)) return;
+      uninstallExtension(ext.id, { session: ses }).catch(() => {});
+    }, 5000);
+  });
+}
+app.on('before-quit', () => (quitting = true));
+
 ipcMain.on('jam:lock', (_e, { wcId, locked }) => {
   if (locked) lockedJamTabs.add(wcId);
   else lockedJamTabs.delete(wcId);
@@ -417,22 +768,36 @@ ipcMain.on('jam:lock', (_e, { wcId, locked }) => {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   const ses = session.fromPartition('persist:jam');
+  ses.setUserAgent(CHROME_UA);
   // iframe 안에서 클립보드에 쓰는 경우까지 잡기 위해, 클립보드 쓰기 권한 요청도 앱에 알린다
   const notifyClipboard = (wc, permission) => {
     if (permission !== 'clipboard-sanitized-write' || !wc) return;
     const host = wc.hostWebContents;
     if (host) setTimeout(() => host.send('clipboard-written', wc.id), 150);
   };
-  ses.setPermissionRequestHandler((wc, permission, callback) => {
+  // 화면 미러링: 앱이 방금(10초 안) 그 탭에 대해 요청한 "영상만" 캡처만 허락. 웹페이지가 스스로 요청한 화면 캡처는 거절
+  const mirrorCapture = (wc, permission, details = {}, consume = false) => {
+    if (permission !== 'display-capture' || !pendingCapture || !wc) return false;
+    const ok = wc.id === pendingCapture.wcId && Date.now() < pendingCapture.until &&
+      String(details.securityOrigin || details.requestingUrl || '').startsWith('file://') === true &&
+      !(details.mediaTypes || []).includes('audio');
+    if (ok && consume) pendingCapture = null;
+    return ok;
+  };
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
     notifyClipboard(wc, permission);
-    callback(ALLOWED_PERMISSIONS.has(permission));
+    callback(ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, details, true));
   });
-  ses.setPermissionCheckHandler((wc, permission) => {
+  ses.setPermissionCheckHandler((wc, permission, origin, details) => {
     notifyClipboard(wc, permission);
-    return ALLOWED_PERMISSIONS.has(permission);
+    return ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, { securityOrigin: origin, ...details });
   });
   setupDownloads(ses);
+  setupExtensions(ses);
+  // 브라우저 계정 · 비밀번호 뱅크 · 친구 (모두 이 PC 안에서만, 메인 프로세스가 키를 들고 있음)
+  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched });
   createWindow();
+  startNearbyScanner();
   setupAutoUpdate();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -441,6 +806,9 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', async () => {
   if (relayTunnel) relayTunnel.close();
+  if (beacon) beacon.close();
+  if (scanner) scanner.close();
+  if (pairing) pairing.cancel();
   if (jamServer) await jamServer.close();
   app.quit();
 });
