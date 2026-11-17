@@ -94,11 +94,14 @@
           <div class="mirror-bar">
             <span id="mirror-title"></span>
             <span id="mirror-level" class="muted small"></span>
+            <span id="mirror-q" class="muted small" title="받는 화면 크기 · 초당 장수"></span>
             <div class="spacer"></div>
+            <button id="mirror-req" class="text-btn small" title="호스트에게 마우스 · 키 조작을 요청" hidden>✋ 조작 요청</button>
             <button id="mirror-hide" class="text-btn small" title="미러 화면 내리고 내 탭 보기 (오버레이의 🖥 로 다시 열기)">내 탭 보기</button>
           </div>
           <canvas id="mirror-canvas" tabindex="0"></canvas>
           <div id="mirror-wait" class="muted">호스트 화면을 받는 중…</div>
+          <div id="mirror-pause" hidden></div>
         </div>
         <!-- 화면 미러링: 호스트 쪽 "누가 조작 중" 표시 -->
         <div id="mirror-ctrl" hidden></div>
@@ -212,6 +215,7 @@
             <div class="section-title">화면 미러링 <span class="muted small">호스트 · 소리 없음</span></div>
             <button id="mirror-toggle" class="secondary-btn">🖥 지금 탭 화면 미러링</button>
             <p id="mirror-hint" class="muted small"></p>
+            <p id="mirror-stat" class="muted small" hidden></p>
           </div>
 
           <div class="section now">

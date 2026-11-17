@@ -222,6 +222,7 @@ function wireWebview(tab) {
   });
   wv.addEventListener('ipc-message', (e) => {
     if (e.channel.startsWith('jam:clipboard')) onSafetyPageEvent(tab, e.channel, e.args[0]); // 모든 탭
+    else if (e.channel.startsWith('mirror:')) mirror.onPageEvent(tab, e.channel, e.args[0]); // 화면 미러링 중인 탭
     else if (tab === jam.tab) onJamPageEvent(tab, e.channel, e.args[0]);
   });
   wv.addEventListener('did-stop-loading', () => {
@@ -1221,6 +1222,10 @@ function handleMessage(msg) {
     case 'mkey':
     case 'mi':
     case 'control':
+    case 'control-req':
+    case 'mstat':
+    case 'mstate':
+    case 'mblock':
       mirror.handle(msg); // 화면 미러링 (mirror.js)
       break;
     case 'members': {
@@ -1414,7 +1419,7 @@ function renderMembers(force = false) {
     canView: m.id !== jam.you.id && m.view && jam.tab && sameDoc(m.view.url, jam.tab.url),
   }));
   // 내용이 같으면 다시 그리지 않는다 (버튼 클릭이 끊기지 않게)
-  const key = JSON.stringify([host, jam.room.hostId, jam.room.settings, !!jam.room.mirror, mirror.isMirroring(), rows.map((r) => [r.m.id, r.m.name, r.m.canCrossSite, r.status, !!r.canView, !!r.m.friend, !!r.m.verified, r.m.control])]);
+  const key = JSON.stringify([host, jam.room.hostId, jam.room.settings, !!jam.room.mirror, mirror.isMirroring(), rows.map((r) => [r.m.id, r.m.name, r.m.canCrossSite, r.status, !!r.canView, !!r.m.friend, !!r.m.verified, JSON.stringify(r.m.control)])]);
   if (!force && key === membersKey) return;
   membersKey = key;
 
@@ -1444,7 +1449,7 @@ function renderMembers(force = false) {
             el('span', { class: `perm ${crossOk ? 'on' : ''}`, title: crossOk ? '다른 사이트 이동 가능' : '같은 사이트 안에서만 이동' }, crossOk ? '🌐' : '🔒')
           ),
           el('div', { class: 'status' }, status),
-          m.control && m.control !== 'view' && jam.room.mirror ? el('div', { class: 'status ctrl' }, `화면 조작: ${JamMirror.LEVEL_LABEL[m.control]}`) : null,
+          JamMirror.canControl(m.control) && jam.room.mirror ? el('div', { class: 'status ctrl' }, `화면 조작: ${JamMirror.controlLabel(m.control)}`) : null,
           mirror.controlSelect(m)
         ),
         el(

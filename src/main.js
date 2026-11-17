@@ -240,7 +240,107 @@ ipcMain.handle('mirror:source-id', (e, wcId) => {
   const wc = webContents.fromId(Number(wcId));
   if (!wc || wc.getType() !== 'webview' || wc.hostWebContents !== mainWindow.webContents) throw new Error('탭을 찾을 수 없어요');
   pendingCapture = { wcId: wc.id, until: Date.now() + 10000 }; // 이 탭에 대한 캡처 요청 한 번만 허락 (권한 처리기에서 확인)
+  mirrorWcId = wc.id; // 원격 조작은 이 탭에만 들어간다
   return wc.getMediaSourceId(mainWindow.webContents);
+});
+ipcMain.handle('mirror:end', (e) => {
+  if (!fromApp(e)) return;
+  mirrorWcId = null;
+});
+
+// ---------- 화면 미러링: 참여자의 조작 넣기 ----------
+// 운영체제 입력(SendInput)이 아니라 Chromium 안의 입력 이벤트로 미러링 중인 그 탭에만 들어간다.
+// → 다른 프로그램(키로거 등) · 앱 화면 · 다른 탭은 이 입력을 받지도 보지도 못한다.
+// 누르기 · 떼기 · 키는 넣기 전에 그 탭 안 스크립트에 "지금 그 자리에 뭐가 있나"를 물어보고,
+// 로그인 · 결제 · 계정 · 개인정보 쪽 버튼이나 비밀 입력 칸이면 넣지 않는다 (shared/mirror.js 의 remoteVerdict).
+const MIRROR = require('../shared/mirror');
+let mirrorWcId = null;
+const remoteMarks = new Map(); // wcId → Map(출처 → 마지막 원격 입력 시각)
+const REMOTE_TAINT_MS = 30 * 60e3;
+const probes = new Map();
+let probeSeq = 0;
+const originOfUrl = (u) => {
+  try {
+    const x = new URL(u);
+    return /^https?:$/.test(x.protocol) ? x.origin : x.protocol;
+  } catch {
+    return '';
+  }
+};
+function markRemote(wc) {
+  let m = remoteMarks.get(wc.id);
+  if (!m) remoteMarks.set(wc.id, (m = new Map()));
+  m.set(originOfUrl(wc.getURL()), Date.now());
+}
+/** 이 탭 · 이 사이트에 최근 ms 안에 다른 컴퓨터의 입력이 들어왔나 (비밀번호 저장 제안 · 자동 입력을 막는 데 씀) */
+function remoteTouched(wcId, url, ms = REMOTE_TAINT_MS) {
+  const m = remoteMarks.get(wcId);
+  const at = m && m.get(originOfUrl(url));
+  return !!at && Date.now() - at < ms;
+}
+ipcMain.on('mirror:probe-result', (e, r) => {
+  const pr = probes.get(r && r.id);
+  if (!pr || e.sender.id !== pr.wcId) return;
+  probes.delete(r.id);
+  clearTimeout(pr.timer);
+  pr.resolve(r.d || null);
+});
+function probeTab(wc, q) {
+  return new Promise((resolve) => {
+    const id = ++probeSeq;
+    const timer = setTimeout(() => {
+      probes.delete(id);
+      resolve(null); // 답이 없으면 막는 쪽으로
+    }, 400);
+    probes.set(id, { wcId: wc.id, resolve, timer });
+    wc.send('mirror:probe', { id, ...q });
+  });
+}
+const INPUT_TYPES = new Set(['mouseMove', 'mouseDown', 'mouseUp', 'mouseWheel', 'keyDown', 'keyUp', 'char']);
+function cleanInput(ev) {
+  if (!ev || typeof ev !== 'object' || !INPUT_TYPES.has(ev.type)) return null;
+  const out = { type: ev.type };
+  if (ev.type.startsWith('mouse')) {
+    const x = Math.round(Number(ev.x));
+    const y = Math.round(Number(ev.y));
+    if (!(x >= 0 && x <= 16384 && y >= 0 && y <= 16384)) return null;
+    Object.assign(out, { x, y });
+    if (ev.type === 'mouseDown' || ev.type === 'mouseUp') {
+      out.button = ev.button === 'middle' ? 'middle' : 'left';
+      out.clickCount = Math.min(3, Math.max(1, Math.round(Number(ev.clickCount) || 1)));
+    }
+    if (ev.type === 'mouseWheel') {
+      out.deltaX = Math.max(-2000, Math.min(2000, Math.round(Number(ev.deltaX) || 0)));
+      out.deltaY = Math.max(-2000, Math.min(2000, Math.round(Number(ev.deltaY) || 0)));
+      out.canScroll = true;
+    }
+  } else {
+    const k = String(ev.keyCode || '');
+    if (ev.type === 'char' ? [...k].length !== 1 : !MIRROR.ELECTRON_KEYS.has(k)) return null;
+    out.keyCode = k;
+    out.modifiers = Array.isArray(ev.modifiers) && ev.modifiers.includes('shift') ? ['shift'] : [];
+  }
+  return out;
+}
+ipcMain.handle('mirror:input', async (e, ev, code) => {
+  if (!fromApp(e) || !mirrorWcId) return { ok: false, reason: 'off' };
+  const { webContents } = require('electron');
+  const wc = webContents.fromId(mirrorWcId);
+  if (!wc || wc.isDestroyed() || wc.getType() !== 'webview' || wc.hostWebContents !== mainWindow.webContents) return { ok: false, reason: 'off' };
+  const out = cleanInput(ev);
+  if (!out) return { ok: false, reason: 'bad' };
+  if (out.type !== 'mouseMove' && out.type !== 'mouseWheel') {
+    const d = await probeTab(wc, { kind: out.type, x: out.x, y: out.y });
+    const v = MIRROR.remoteVerdict(d, out.type, typeof code === 'string' ? code : '');
+    if (!v.ok) {
+      if (!wc.isDestroyed()) wc.send('mirror:disarm');
+      return v;
+    }
+  }
+  if (wc.isDestroyed()) return { ok: false, reason: 'off' };
+  markRemote(wc);
+  wc.sendInputEvent(out);
+  return { ok: true };
 });
 
 // ---------- 근처 찾기 (UDP 3032, 같은 네트워크) ----------
@@ -583,7 +683,7 @@ app.whenReady().then(() => {
   });
   setupDownloads(ses);
   // 브라우저 계정 · 비밀번호 뱅크 · 친구 (모두 이 PC 안에서만, 메인 프로세스가 키를 들고 있음)
-  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow });
+  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched });
   createWindow();
   startNearbyScanner();
   setupAutoUpdate();

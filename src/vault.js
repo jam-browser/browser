@@ -32,7 +32,7 @@ function originOf(url) {
   }
 }
 
-function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow }) {
+function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow, remoteTouched = () => false }) {
   const dir = path.join(app.getPath('userData'), 'vault');
   const FILE = path.join(dir, 'profile.jvault');
   const SK_FILE = path.join(dir, 'secret-key.dat');
@@ -386,6 +386,8 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
 
   ipcMain.on('pw:fill-request', (e, arg) => {
     if (!fromWebview(e) || !session) return;
+    // 방금(3초 안) 다른 컴퓨터의 조작(화면 미러링)이 들어온 탭이면 채우지 않음 → 참여자가 🔑 를 눌러 채우게 만들 수 없음
+    if (remoteTouched(e.sender.id, e.sender.getURL(), 3000)) return;
     const origin = originOf(e.sender.getURL());
     const l = session.doc.logins.find((x) => x.id === arg?.id);
     if (!l || l.origin !== origin) return; // 지금 보고 있는 사이트(정확히 같은 출처)에만
@@ -395,6 +397,8 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
 
   ipcMain.on('pw:captured', (e, arg) => {
     if (!fromWebview(e) || !session) return;
+    // 이 사이트에 다른 컴퓨터의 입력(화면 미러링 조작)이 들어왔으면 저장 제안을 띄우지 않음 (30분)
+    if (remoteTouched(e.sender.id, e.sender.getURL())) return;
     const origin = originOf(e.sender.getURL());
     const username = clean(arg?.username, 200);
     const password = String(arg?.password || '').slice(0, 1000);
