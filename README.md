@@ -5,8 +5,16 @@
 
 ## 설치
 
-[Releases](../../releases) 에서 `JamBrowser-Setup-버전.exe` 를 받아 실행하면 바로 설치돼요 (관리자 권한 불필요).
-설치된 앱은 새 버전이 나오면 **자동으로 업데이트**돼요.
+### ⬇ [Jam Browser 설치 파일 받기 (Windows, 최신 버전)](https://github.com/jam-browser/browser/releases/latest/download/JamBrowser-Setup.exe)
+
+받은 `JamBrowser-Setup.exe` 를 실행하면 묻지 않고 바로 설치돼요 (관리자 권한 불필요, 바탕화면·시작 메뉴 바로가기 생성).
+설치된 앱은 새 버전이 나오면 **자동으로 업데이트**돼요. 이전 버전은 [Releases](https://github.com/jam-browser/browser/releases) 에 있어요.
+
+명령어로 받기 (PowerShell):
+
+```powershell
+Invoke-WebRequest https://github.com/jam-browser/browser/releases/latest/download/JamBrowser-Setup.exe -OutFile JamBrowser-Setup.exe; .\JamBrowser-Setup.exe
+```
 
 > 코드 서명 인증서가 없어서 처음 실행할 때 Windows 가 "PC를 보호했습니다"라고 할 수 있어요. "추가 정보 → 실행"을 누르세요.
 
@@ -103,6 +111,7 @@ npm run dist       # 설치 파일 만들기 (dist/)
 E2E 테스트는 [`test/e2e`](test/e2e) 참고. Windows 가 기본 포트를 예약해 둔 PC 에서는 `JAM_E2E_HOST_PORT` · `JAM_E2E_GUEST_PORT` · `JAM_E2E_SITE_PORT` 로 바꿔요.
 
 릴리스: `package.json` 의 버전을 올리고 `npm run dist` 로 만든 설치 파일을 `gh release create v버전 …` 으로 올리면, 설치된 앱들이 자동으로 업데이트해요 (자동 빌드 설정은 [`ci/`](ci)).
+릴리스에는 버전 없는 이름의 사본 `JamBrowser-Setup.exe` 도 꼭 함께 올려 주세요 — 위의 "설치 파일 받기" 링크가 항상 최신을 가리키게 돼요.
 
 ### 구조
 
