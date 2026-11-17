@@ -9,13 +9,15 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "test": "node test/sync-test.js && node test/relay-test.js && node test/vault-test.js && node test/access-test.js && node test/nearby-test.js && node test/mirror-test.js",
+    "test": "node test/sync-test.js && node test/relay-test.js && node test/vault-test.js && node test/access-test.js && node test/nearby-test.js && node test/mirror-test.js && node test/files-test.js",
     "icon": "electron scripts/make-icon.js",
     "dist": "electron-builder --win --publish never",
     "release": "electron-builder --win --publish always"
   },
   "dependencies": {
+    "@ruffle-rs/ruffle": "0.7.1",
     "electron-updater": "^6.8.11",
+    "pdfjs-dist": "6.5.438",
     "ws": "^8.23.0"
   },
   "devDependencies": {
@@ -34,7 +36,12 @@
       "src/**/*",
       "server/**/*",
       "shared/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.map",
+      "!node_modules/pdfjs-dist/legacy/**",
+      "!node_modules/pdfjs-dist/types/**",
+      "!node_modules/pdfjs-dist/image_decoders/**",
+      "!node_modules/pdfjs-dist/webpack.mjs"
     ],
     "win": {
       "target": [

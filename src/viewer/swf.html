@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>SWF</title>
+<!-- Jam Browser 공유 SWF 플레이어 (Ruffle, MIT/Apache-2.0). 인터넷 접속 끔, 소리는 앱 전체 음소거 -->
+<style>
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; }
+  #player { position: fixed; inset: 0; }
+  #player > * { width: 100%; height: 100%; }
+  #msg { position: fixed; left: 0; right: 0; top: 45%; text-align: center; color: #ccc; font: 14px "Segoe UI", "Malgun Gothic", sans-serif; }
+</style>
+</head>
+<body>
+<div id="player"></div>
+<div id="msg">불러오는 중…</div>
+<script>
+  window.RufflePlayer = window.RufflePlayer || {};
+  window.RufflePlayer.config = {
+    publicPath: '/_jam/ruffle/',
+    polyfills: false,
+    autoplay: 'on',
+    unmuteOverlay: 'hidden',
+    splashScreen: false,
+    letterbox: 'on',
+    allowNetworking: 'none',
+    openUrlMode: 'deny',
+    showSwfDownload: false,
+    contextMenu: 'off',
+    warnOnUnsupportedContent: false,
+    logLevel: 'error',
+  };
+</script>
+<script src="/_jam/ruffle/ruffle.js"></script>
+<script>
+  (async () => {
+    let name = 'SWF';
+    try { name = (await (await fetch('/_meta')).json()).name; } catch {}
+    document.title = name;
+    try {
+      const player = window.RufflePlayer.newest().createPlayer();
+      document.getElementById('player').appendChild(player);
+      const api = typeof player.ruffle === 'function' ? player.ruffle() : player;
+      await api.load({ url: '/file', allowNetworking: 'none', openUrlMode: 'deny' });
+      document.getElementById('msg').remove();
+      player.focus();
+      window.__swf = { ok: true };
+    } catch (e) {
+      document.getElementById('msg').textContent = 'SWF 를 열 수 없어요: ' + (e && e.message);
+      window.__swf = { ok: false, error: String(e && e.message) };
+    }
+  })();
+</script>
+</body>
+</html>

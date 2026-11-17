@@ -68,7 +68,18 @@ function isWebUrl(u) {
     return false;
   }
 }
-const isShareable = (u) => isWebUrl(u) && !isSensitiveUrl(u);
+// 같이 보는 파일: jamfile://<파일ID>/... (호스트가 공유한 파일, 각자 PC 메모리에서 열림)
+const FID_RE = /^[a-z0-9]{16}$/;
+const isJamFileUrl = (u) => typeof u === 'string' && u.length < 2048 && /^jamfile:\/\/[a-z0-9]{16}(\/\S*)?$/.test(u);
+const fidOf = (u) => (isJamFileUrl(u) ? u.slice(10, 26) : null);
+const isShareable = (u) => (isWebUrl(u) && !isSensitiveUrl(u)) || isJamFileUrl(u);
+const FILE_PIECE = 32 * 1024;
+const FILE_MAX = 50 * 1024 * 1024;
+const FILE_ROOM_MAX = 200 * 1024 * 1024;
+const FILE_MAX_COUNT = 10;
+const FILE_KINDS = new Set(['pdf', 'html', 'image', 'text', 'swf']);
+const FILE_PER_TICK = 2; // 20ms 마다 2조각 → 참여자 1명당 초당 100조각(약 3.2MB/s), 중계 서버의 초당 200개 한도 안
+const FILE_BACKLOG = 512 * 1024;
 
 function ratio(n) {
   n = Number(n);
@@ -183,7 +194,49 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     settings: publicSettings(room),
     media: mediaOut(room),
     mirror: room.mirror || null,
+    files: [...room.files.values()].map(publicFile),
   });
+  const publicFile = (f) => ({ ...f.meta, ready: !!f.ready });
+  // 파일 내려보내기: 참여자마다 줄을 세워 조금씩 (밀리면 기다림)
+  let filePump = null;
+  function pumpFiles() {
+    let busy = false;
+    for (const r of rooms.values()) {
+      for (const m of r.members.values()) {
+        const q = m.fileQ;
+        if (!q || !q.length) continue;
+        busy = true;
+        for (let k = 0; k < FILE_PER_TICK && q.length; k++) {
+          if (m.ws.readyState !== 1) {
+            q.length = 0;
+            break;
+          }
+          if (m.ws.bufferedAmount > FILE_BACKLOG) break;
+          const job = q[0];
+          const f = r.files.get(job.fid);
+          if (!f || !f.ready) {
+            q.shift();
+            continue;
+          }
+          const piece = f.data.subarray(job.i * FILE_PIECE, (job.i + 1) * FILE_PIECE);
+          send(m.ws, { type: 'file-down', fid: job.fid, i: job.i, n: f.n, d: piece.toString('base64') });
+          if (++job.i >= f.n) q.shift();
+        }
+      }
+    }
+    if (!busy) {
+      clearInterval(filePump);
+      filePump = null;
+    }
+  }
+  const startFilePump = () => {
+    if (!filePump) filePump = setInterval(pumpFiles, 20);
+  };
+  function removeFile(room, fid) {
+    if (!room.files.delete(fid)) return;
+    for (const m of room.members.values()) if (m.fileQ) m.fileQ = m.fileQ.filter((j) => j.fid !== fid);
+    broadcast(room, { type: 'file-removed', fid });
+  }
   const pushMembers = (room) => broadcast(room, { type: 'members', members: publicMembers(room), hostId: room.hostId });
 
   const canCrossSite = (room, m) => m.id === room.hostId || room.settings.allowAllCrossSite || m.canCrossSite;
@@ -334,6 +387,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           allow: cleanAllow(msg.allow), // 호스트의 친구 지문 목록 (호스트 PC 안에서만, 참여자에게 보내지 않음)
           media: null,
           mirror: null, // 화면 미러링: { sid, by, w, h, title, at }
+          files: new Map(), // 같이 보는 파일: fid → { meta, n, chunks, got, ready, data }
           lastKeyReq: 0,
           colorIndex: 0,
         };
@@ -528,7 +582,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       const now = Date.now();
       const dt = (now - lastRefill) / 1000;
       tokens = Math.min(RATE_BURST, tokens + dt * RATE_PER_SEC);
-      const owner = !!(room && me && room.mirror && room.mirror.by === me.id);
+      const owner = !!(room && me && ((room.mirror && room.mirror.by === me.id) || room.hostId === me.id));
       bytes = Math.min(owner ? OWNER_BYTE_BURST : BYTE_BURST, bytes + dt * (owner ? OWNER_BYTE_RATE : BYTE_RATE));
       lastRefill = now;
       const size = raw.length || raw.byteLength || 0;
@@ -716,8 +770,80 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           }
           break;
         }
+        // ---------- 같이 보는 파일 ----------
+        case 'file-offer': {
+          // 호스트만. 파일 정보 → 다들 목록에 표시, 내용은 file-up 으로 이어서 옴
+          if (!isHost) return;
+          const fid = String(msg.fid || '');
+          const size = Number(msg.size);
+          const count = Number(msg.count);
+          if (!FID_RE.test(fid) || room.files.has(fid) || !FILE_KINDS.has(msg.kind)) return;
+          if (!Number.isInteger(size) || size < 8 || size > FILE_MAX || !/^[0-9a-f]{64}$/.test(String(msg.sha))) return;
+          if (!Number.isInteger(count) || count < 1 || count > 500) return;
+          let total = size;
+          for (const f of room.files.values()) total += f.meta.size;
+          if (room.files.size >= FILE_MAX_COUNT || total > FILE_ROOM_MAX) {
+            return send(ws, { type: 'error', code: 'file-limit', message: `공유 파일은 한 Jam 에 ${FILE_MAX_COUNT}개 · 합계 200MB 까지예요. 안 쓰는 파일을 지워 주세요.` });
+          }
+          const meta = { fid, name: cleanText(msg.name, 120) || 'file', kind: msg.kind, size, sha: msg.sha, entry: cleanText(msg.entry, 300), count, by: me.id };
+          const n = Math.ceil(size / FILE_PIECE);
+          room.files.set(fid, { meta, n, chunks: new Array(n), got: 0, ready: false, data: null });
+          broadcast(room, { type: 'file', file: publicFile(room.files.get(fid)) });
+          broadcast(room, { type: 'system', text: `${me.name}님이 파일을 공유하는 중: ${meta.name}` });
+          break;
+        }
+        case 'file-up': {
+          if (!isHost) return;
+          const f = room.files.get(String(msg.fid));
+          const i = Number(msg.i);
+          if (!f || f.ready || !Number.isInteger(i) || i < 0 || i >= f.n || typeof msg.d !== 'string' || msg.d.length > 44000) return;
+          const buf = Buffer.from(msg.d, 'base64');
+          const want = i < f.n - 1 ? FILE_PIECE : f.meta.size - FILE_PIECE * (f.n - 1);
+          if (buf.length !== want) return;
+          if (!f.chunks[i]) {
+            f.chunks[i] = buf;
+            f.got++;
+          }
+          if (f.got < f.n) return;
+          const all = Buffer.concat(f.chunks);
+          f.chunks = null;
+          if (crypto.createHash('sha256').update(all).digest('hex') !== f.meta.sha) {
+            removeFile(room, f.meta.fid);
+            return send(ws, { type: 'error', code: 'file-bad', message: '올린 파일이 손상돼서 공유를 취소했어요 (해시 불일치)' });
+          }
+          f.data = all;
+          f.ready = true;
+          broadcast(room, { type: 'file', file: publicFile(f) });
+          break;
+        }
+        case 'file-up-end': {
+          // 호스트가 다 보냈다고 알림 → 빠진 조각이 있으면 번호를 돌려줌 (다시 보내게)
+          if (!isHost) return;
+          const f = room.files.get(String(msg.fid));
+          if (!f || f.ready) return;
+          const missing = [];
+          for (let i = 0; i < f.n && missing.length < 2000; i++) if (!f.chunks[i]) missing.push(i);
+          send(ws, { type: 'file-missing', fid: f.meta.fid, list: missing });
+          break;
+        }
+        case 'file-get': {
+          // 참여자가 "받기" → 이 사람에게만 조금씩 내려보냄
+          const f = room.files.get(String(msg.fid));
+          if (!f || !f.ready) return;
+          me.fileQ = me.fileQ || [];
+          if (me.fileQ.some((j) => j.fid === f.meta.fid) || me.fileQ.length >= 3) return;
+          me.fileQ.push({ fid: f.meta.fid, i: 0 });
+          startFilePump();
+          break;
+        }
+        case 'file-remove': {
+          if (!isHost) return;
+          removeFile(room, String(msg.fid));
+          break;
+        }
         case 'navigate': {
           if (!isShareable(msg.url)) return;
+          if (isJamFileUrl(msg.url) && !room.files.get(fidOf(msg.url))?.ready) return; // 공유가 끝난 파일만
           if (!canGo(room, me, msg.url)) return send(ws, NO_CROSS);
           room.current = { url: msg.url, title: cleanText(msg.title, 200), by: me.id };
           broadcast(room, { type: 'navigate', url: msg.url, title: room.current.title, by: me.id }, ws);
@@ -931,6 +1057,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
 
   function close() {
     clearInterval(heartbeat);
+    clearInterval(filePump);
     for (const ws of wss.clients) ws.terminate();
     return new Promise((resolve) => wss.close(() => server.close(() => resolve())));
   }
@@ -956,7 +1083,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
   });
 }
 
-module.exports = { createJamServer, isWebUrl, isPrivateIp };
+module.exports = { createJamServer, isWebUrl, isPrivateIp, isJamFileUrl };
 
 if (require.main === module) {
   const port = Number(process.argv[2] || process.env.PORT || 3030);

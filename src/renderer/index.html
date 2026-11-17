@@ -218,6 +218,15 @@
             <p id="mirror-stat" class="muted small" hidden></p>
           </div>
 
+          <div class="section files-section" id="files-section" hidden>
+            <div class="section-title">📎 같이 보는 파일 <span class="muted small">PDF · HTML · 이미지 · 텍스트 · SWF</span></div>
+            <div class="files-actions" id="files-actions">
+              <button id="file-share" class="secondary-btn" title="내 PC 의 파일을 Jam 참여자와 같이 보기 (메모리에만, 암호화 전송)">📎 파일 공유</button>
+              <button id="file-share-pdf" class="secondary-btn" title="지금 탭의 PDF 를 받아서 Jam 에 공유 (쪽 · 스크롤 같이 보기)" hidden>📄 이 PDF 공유</button>
+            </div>
+            <div id="files-list"></div>
+          </div>
+
           <div class="section now">
             <div class="section-title">지금 함께 보는 페이지</div>
             <div id="now-page" class="now-page"></div>
@@ -586,6 +595,7 @@
   <script src="customize.js"></script>
   <script src="../../shared/mirror.js"></script>
   <script src="mirror.js"></script>
+  <script src="files.js"></script>
   <script src="account.js"></script>
 </body>
 </html>

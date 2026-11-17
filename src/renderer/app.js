@@ -19,7 +19,9 @@ function isWebUrl(u) {
     return false;
   }
 }
-const isShareable = (u) => isWebUrl(u) && !isSensitiveUrl(u);
+// 같이 보는 파일 (jamfile://<ID>/): 호스트가 공유한 파일, 각자 PC 메모리에서 열림
+const isJamFileUrl = (u) => typeof u === 'string' && /^jamfile:\/\/[a-z0-9]{16}(\/|$)/.test(u);
+const isShareable = (u) => (isWebUrl(u) && !isSensitiveUrl(u)) || isJamFileUrl(u);
 
 function toUrl(input) {
   const t = input.trim();
@@ -210,6 +212,7 @@ function wireWebview(tab) {
     renderTabs();
   });
   const onNav = (url, inPage) => {
+    if (!inPage && !isWebUrl(url)) tab.favicon = null; // 공유 파일 등: 앞 사이트 아이콘이 남지 않게
     tab.url = url;
     if (!inPage) onSafetyNavigated(tab);
     ui.onNavigated(tab, url, inPage);
@@ -238,6 +241,7 @@ function wireWebview(tab) {
 // Jam 동기화로 Jam 탭을 이동 (내가 누른 이동이 아니라는 표시를 남겨, 다운로드 링크면 막는다)
 function followNavigate(url) {
   if (!jam.tab) return;
+  if (!jamFiles.gate(url)) return; // 아직 안 받은 공유 파일 → 받을지 물어봄
   jam.lastSyncedUrl = url;
   if (jam.tab.ready) jamApp.markRemoteNav(jam.tab.webview.getWebContentsId());
   navigateTab(jam.tab, url);
@@ -314,6 +318,8 @@ function renderTabs() {
 }
 
 function updateToolbar() {
+  if (window.jamFiles) jamFiles.render();
+  if (jam.active) $('#follow-scroll').checked = followsScroll(jam.tab?.url);
   const t = activeTab;
   if (!t) return;
   if (document.activeElement !== $('#url')) $('#url').value = ui.toolbarUrl(t);
@@ -782,8 +788,10 @@ async function joinJam() {
 function finishJoin({ ws, welcome, keys }, server, secret, inviteText) {
   jam.serverUrl = server;
   jam.secret = secret;
-  const tab = createTab(welcome.room.current?.url || ui.homeUrl());
+  const startUrl = welcome.room.current?.url;
+  const tab = createTab(startUrl && !isJamFileUrl(startUrl) ? startUrl : ui.homeUrl());
   enterJam(ws, welcome, tab, keys);
+  if (isJamFileUrl(startUrl)) jamFiles.gate(startUrl); // 호스트가 공유 파일을 보고 있음 → 받아서 열지 물어봄
   jam.invite = inviteText;
   $('#invite-alt').textContent = '';
   renderJam();
@@ -924,6 +932,7 @@ function adoptWelcome(ws, welcome, keys) {
   refreshAllViews();
   applyMedia();
   mirror.onWelcome(welcome.room);
+  jamFiles.onWelcome(welcome.room);
   for (const msg of ws.early.splice(0)) handleMessage(msg);
 }
 
@@ -962,6 +971,7 @@ function cleanupJam() {
     try { ws.close(); } catch {}
   }
   mirror.reset();
+  jamFiles.reset();
   if (jam.tab && jam.tab.ready) jam.tab.webview.send('jam:clear');
   if (jam.lockedWcId != null) jamApp.setLock(jam.lockedWcId, false);
   jam.lockedWcId = null;
@@ -1228,6 +1238,12 @@ function handleMessage(msg) {
     case 'mblock':
       mirror.handle(msg); // 화면 미러링 (mirror.js)
       break;
+    case 'file':
+    case 'file-removed':
+    case 'file-down':
+    case 'file-missing':
+      jamFiles.handle(msg); // 같이 보는 파일 (files.js)
+      break;
     case 'members': {
       jam.room.members = msg.members;
       jam.room.hostId = msg.hostId;
@@ -1286,7 +1302,7 @@ function handleMessage(msg) {
       updateDrift();
       break;
     case 'scroll':
-      if (jam.followScroll && jam.follow && !jam.loginWait && tab?.ready && sameDoc(msg.url, tab.url)) {
+      if (followsScroll(msg.url) && jam.follow && !jam.loginWait && tab?.ready && sameDoc(msg.url, tab.url)) {
         tab.webview.send('jam:scroll-to', { x: msg.x, y: msg.y, top: msg.top });
       }
       break;
@@ -1359,6 +1375,7 @@ function renderJam() {
   renderMinimap();
   renderNearby();
   mirror.render();
+  jamFiles.render();
   if (!jam.active) return;
   $('#nearby-row').hidden = !jam.isHost();
 
@@ -1372,7 +1389,7 @@ function renderJam() {
   allow.disabled = !jam.isHost();
   $('#allow-all-row').title = jam.isHost() ? '' : '호스트만 바꿀 수 있어요';
   $('#follow').checked = jam.follow;
-  $('#follow-scroll').checked = jam.followScroll;
+  $('#follow-scroll').checked = followsScroll(jam.tab?.url);
   $('#my-perm').textContent = jam.canCrossSite()
     ? '🌐 나는 다른 사이트로도 이동할 수 있어요'
     : '🔒 나는 같은 사이트 안에서만 이동할 수 있어요 (다른 사이트는 호스트 권한 필요)';
@@ -1797,8 +1814,13 @@ $('#follow').addEventListener('change', (e) => {
   updateDrift();
 });
 $('#follow-scroll').addEventListener('change', (e) => {
-  jam.followScroll = e.target.checked;
+  if (isJamFileUrl(jam.tab?.url)) jam.fileScrollOff = !e.target.checked; // 공유 파일에서 직접 끄면 파일에서도 안 따라감
+  else jam.followScroll = e.target.checked;
 });
+// 공유 파일(PDF 등)은 쪽 · 스크롤을 같이 보는 게 목적이라 기본으로 스크롤도 따라감 (직접 끄면 그대로)
+function followsScroll(url) {
+  return jam.followScroll || (isJamFileUrl(url) && !jam.fileScrollOff);
+}
 $('#allow-all').addEventListener('change', (e) => {
   jam.send({ type: 'settings', allowAllCrossSite: e.target.checked });
 });
