@@ -292,10 +292,7 @@ function closeTab(tab) {
   else renderTabs();
 }
 
-// ---------- 탭 소리 ----------
-const tabWcId = (tab) => {
-  try { return tab.webview.getWebContentsId(); } catch { return null; } // 아직 붙기 전
-};
+// ---------- 탭 소리 ---------- (tabWcId 는 아래 '확장 프로그램' 부분에 있음)
 function setTabMuted(tab, muted) {
   tab.muted = muted;
   if (tab.ready) tab.webview.setAudioMuted(muted);
