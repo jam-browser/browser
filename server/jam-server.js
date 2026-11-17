@@ -14,6 +14,11 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { sameSite, isSensitiveUrl } = require('../shared/site');
 const { deriveKeys, checkProof, seal, open, C2S, S2C } = require('../shared/jam-crypto');
+const ID = require('../shared/identity');
+
+// 입장 방식: approval = 링크 + 호스트 승인(기본) · friends = 링크를 가진 친구만(자동 입장) · open = 링크만 있으면 자유 입장
+const ACCESS = new Set(['approval', 'friends', 'open']);
+const cleanAllow = (list) => new Set((Array.isArray(list) ? list : []).filter((x) => /^[A-Z0-9]{24}$/.test(String(x))).slice(0, 500));
 
 const MAX_FAILURES = 8; // 잘못된 초대 코드 8번 → 10분 차단
 const MAX_CONNS_PER_IP = 10;
@@ -133,6 +138,14 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
   };
   const publicMember = (m) => ({
     id: m.id, name: m.name, color: m.color, canCrossSite: m.canCrossSite, presence: m.presence, view: m.view,
+    verified: !!m.fp, // 브라우저 계정 서명으로 신원이 확인됨
+    friend: !!m.friend, // 호스트의 친구 목록에 있음
+  });
+  // 설정은 참여자에게 보낼 때 호스트의 친구 목록(allow)을 빼고 보낸다
+  const publicSettings = (room) => ({
+    allowAllCrossSite: room.settings.allowAllCrossSite,
+    access: room.settings.access,
+    requireApproval: room.settings.access === 'approval',
   });
   const publicMembers = (room) => [...room.members.values()].map(publicMember);
   const mediaOut = (room) => (room.media ? { ...room.media, age: Date.now() - room.media.at } : null);
@@ -142,7 +155,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     members: publicMembers(room),
     queue: room.queue,
     current: room.current,
-    settings: room.settings,
+    settings: publicSettings(room),
     media: mediaOut(room),
   });
   const pushMembers = (room) => broadcast(room, { type: 'members', members: publicMembers(room), hostId: room.hostId });
@@ -163,7 +176,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
   function sendJoinRequests(room) {
     const host = hostOf(room);
     if (!host) return;
-    for (const p of room.pending.values()) send(host.ws, { type: 'join-request', id: p.id, name: p.name, ip: p.ip });
+    for (const p of room.pending.values()) send(host.ws, { type: 'join-request', id: p.id, name: p.name, ip: p.ip, fp: p.fp, friend: p.friend });
   }
 
   wss.on('connection', (ws, req) => {
@@ -189,11 +202,13 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       ws.close();
     }
 
-    function enterRoom(target, name, kind) {
+    function enterRoom(target, name, kind, who = {}) {
       room = target;
       me = {
         id: String(nextId++),
         name,
+        fp: who.fp || null,
+        friend: !!who.friend,
         color: COLORS[room.colorIndex++ % COLORS.length],
         ws,
         canCrossSite: false,
@@ -228,7 +243,8 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           resumes: new Map(),
           queue: [],
           current: isShareable(msg.url) ? { url: msg.url, title: cleanText(msg.title, 200), by: null } : null,
-          settings: { allowAllCrossSite: false, requireApproval: true },
+          settings: { allowAllCrossSite: false, access: ACCESS.has(msg.access) ? msg.access : 'approval' },
+          allow: cleanAllow(msg.allow), // 호스트의 친구 지문 목록 (호스트 PC 안에서만, 참여자에게 보내지 않음)
           media: null,
           colorIndex: 0,
         };
@@ -248,6 +264,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       }
       // 이름·재접속 토큰은 방 키로 암호화해서 온다 (중계 서버가 이름을 볼 수 없게). 예전 방식(평문)도 받아준다
       let resumeToken = typeof msg.resume === 'string' ? msg.resume : null;
+      let who = {};
       if (typeof msg.p === 'string') {
         let inner;
         try {
@@ -258,6 +275,14 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         }
         name = cleanText(inner.name, 24) || '익명';
         resumeToken = typeof inner.resume === 'string' ? inner.resume : null;
+        // 브라우저 계정 신원: 이 연결의 nonce + 방 코드에 대한 서명이어야 한다 (사칭 · 재사용 방지)
+        if (inner.id) {
+          if (!ID.verifyJoin(inner.id.pub, inner.id.sig, nonce, target.code)) {
+            return deny('bad-identity', '신원 확인에 실패했어요.');
+          }
+          who = { fp: ID.fingerprint(inner.id.pub) };
+          who.friend = target.allow.has(who.fp);
+        }
       }
       ws.keys = target.keys;
       clearTimeout(authTimer);
@@ -267,9 +292,16 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       const resume = resumeToken && target.resumes.get(resumeToken);
       if (resume && resume.expires > Date.now()) {
         target.resumes.delete(resumeToken);
-        return enterRoom(target, name, 'join');
+        return enterRoom(target, name, 'join', who);
       }
-      if (!target.settings.requireApproval) return enterRoom(target, name, 'join');
+      const access = target.settings.access;
+      if (access === 'friends') {
+        if (!who.friend) {
+          return deny('not-friend', '이 Jam 은 호스트의 친구만 들어올 수 있어요. 브라우저 계정에 로그인하고 호스트와 친구 코드를 주고받았는지 확인하세요.');
+        }
+        return enterRoom(target, name, 'join', who); // 친구는 승인 없이 바로
+      }
+      if (access === 'open') return enterRoom(target, name, 'join', who);
 
       // 호스트 승인 대기
       if (target.pending.size >= MAX_PENDING) return deny('busy', '참여 요청이 너무 많아요. 잠시 후 다시 시도하세요.');
@@ -277,9 +309,11 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         id: `p${nextId++}`,
         name,
         ip: ip.replace(/^::ffff:/, ''),
+        fp: who.fp || null,
+        friend: !!who.friend,
         accept: () => {
           pending = null;
-          enterRoom(target, name, 'join');
+          enterRoom(target, name, 'join', who);
         },
         reject: (reason) => {
           pending = null;
@@ -484,8 +518,18 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
                 : '이제 권한을 받은 사람만 다른 사이트로 이동할 수 있어요',
             });
           }
-          if (typeof msg.requireApproval === 'boolean') room.settings.requireApproval = msg.requireApproval;
-          broadcast(room, { type: 'settings', settings: room.settings });
+          if (typeof msg.requireApproval === 'boolean') room.settings.access = msg.requireApproval ? 'approval' : 'open'; // 예전 설정 방식
+          if (ACCESS.has(msg.access) && msg.access !== room.settings.access) {
+            room.settings.access = msg.access;
+            const label = { approval: '링크 + 호스트 승인', friends: '링크를 가진 친구만', open: '링크만 있으면 자유 입장' }[msg.access];
+            broadcast(room, { type: 'system', text: `입장 방식이 "${label}" 으로 바뀌었어요` });
+          }
+          if (Array.isArray(msg.allow)) {
+            room.allow = cleanAllow(msg.allow);
+            for (const m of room.members.values()) m.friend = !!m.fp && room.allow.has(m.fp);
+            pushMembers(room);
+          }
+          broadcast(room, { type: 'settings', settings: publicSettings(room) });
           break;
         }
         case 'approve': {

@@ -1,11 +1,12 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, Menu, clipboard, session } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, clipboard, session, safeStorage, powerMonitor } = require('electron');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { createJamServer } = require('../server/jam-server');
 const { startRelayTunnel } = require('../server/relay-tunnel');
 const { sameSite } = require('../shared/site');
+const { setupVault } = require('./vault');
 
 const DEFAULT_PORT = 3030;
 let mainWindow = null;
@@ -32,9 +33,12 @@ function lanAddresses() {
 }
 
 function createWindow() {
+  // 자동 테스트용: 창을 화면 밖에 띄우고 포커스를 뺏지 않는다 (작업 중인 화면을 가리지 않게)
+  const offscreen = process.env.JAM_TEST_OFFSCREEN === '1';
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
+    ...(offscreen ? { x: -6000, y: 0, show: false } : {}),
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#121212',
@@ -46,8 +50,10 @@ function createWindow() {
       nodeIntegration: false,
       sandbox: true,
       webviewTag: true,
+      ...(offscreen ? { backgroundThrottling: false } : {}),
     },
   });
+  if (offscreen) mainWindow.showInactive();
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('closed', () => (mainWindow = null));
   mainWindow.on('enter-full-screen', () => mainWindow.webContents.send('fullscreen', true));
@@ -61,6 +67,8 @@ function shortcutFor(input) {
   const ctrl = input.control || input.meta;
   if (ctrl && input.shift && key === 't') return 'reopen-tab';
   if (ctrl && input.shift && key === 'b') return 'toggle-bookmarks';
+  if (ctrl && input.shift && key === 'l') return 'lock';
+  if (ctrl && input.shift && key === 'p') return 'vault';
   if (ctrl && key === 'd') return 'bookmark';
   if (ctrl && key === 'h') return 'history';
   if (ctrl && key === 'f') return 'find';
@@ -424,6 +432,8 @@ app.whenReady().then(() => {
     return ALLOWED_PERMISSIONS.has(permission);
   });
   setupDownloads(ses);
+  // 브라우저 계정 · 비밀번호 뱅크 · 친구 (모두 이 PC 안에서만, 메인 프로세스가 키를 들고 있음)
+  setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow });
   createWindow();
   setupAutoUpdate();
   app.on('activate', () => {

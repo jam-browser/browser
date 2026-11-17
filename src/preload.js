@@ -32,3 +32,34 @@ contextBridge.exposeInMainWorld('jamApp', {
   installUpdate: () => ipcRenderer.send('update:install'),
   onUpdate: (cb) => ipcRenderer.on('update', (_e, s) => cb(s)),
 });
+
+// 브라우저 계정 · 비밀번호 뱅크 · 친구
+// (금고 키와 사이트 비밀번호는 메인 프로세스에만 있다. 여기로는 목록·상태만 온다)
+contextBridge.exposeInMainWorld('jamVault', {
+  status: () => ipcRenderer.invoke('vault:status'),
+  create: (name, password) => ipcRenderer.invoke('vault:create', { name, password }),
+  unlock: (password, secretKey) => ipcRenderer.invoke('vault:unlock', { password, secretKey }),
+  lock: () => ipcRenderer.invoke('vault:lock'),
+  activity: () => ipcRenderer.invoke('vault:activity'),
+  verify: (password) => ipcRenderer.invoke('vault:verify', { password }),
+  changePassword: (oldPassword, newPassword) => ipcRenderer.invoke('vault:change-password', { oldPassword, newPassword }),
+  setAutoLock: (autoLockMinutes) => ipcRenderer.invoke('vault:settings', { autoLockMinutes }),
+  exportBackup: () => ipcRenderer.invoke('vault:export'),
+  importBackup: () => ipcRenderer.invoke('vault:import'),
+  deleteAccount: () => ipcRenderer.invoke('vault:delete-account'),
+  logins: () => ipcRenderer.invoke('vault:logins'),
+  saveLogin: (entry) => ipcRenderer.invoke('vault:login-save', entry),
+  deleteLogin: (id) => ipcRenderer.invoke('vault:login-delete', { id }),
+  copyPassword: (id) => ipcRenderer.invoke('vault:login-copy', { id }),
+  revealPassword: (id, password) => ipcRenderer.invoke('vault:login-reveal', { id, password }),
+  generate: (length) => ipcRenderer.invoke('vault:generate', { length }),
+  identity: () => ipcRenderer.invoke('identity:get'),
+  signJoin: (nonce, code) => ipcRenderer.invoke('identity:sign-join', { nonce, code }),
+  friends: () => ipcRenderer.invoke('friends:list'),
+  addFriend: (code, name) => ipcRenderer.invoke('friends:add', { code, name }),
+  removeFriend: (fp) => ipcRenderer.invoke('friends:remove', { fp }),
+  saveCapture: (captureId) => ipcRenderer.invoke('pw:save-capture', { captureId }),
+  discardCapture: (captureId) => ipcRenderer.invoke('pw:discard-capture', { captureId }),
+  onLocked: (cb) => ipcRenderer.on('vault:locked', (_e, info) => cb(info)),
+  onOfferSave: (cb) => ipcRenderer.on('pw:offer-save', (_e, info) => cb(info)),
+});
