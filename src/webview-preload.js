@@ -550,6 +550,7 @@ document.addEventListener(
 // 동영상 재생 맞추기 (+ 유튜브 광고 예외)
 // ======================================================================
 let video = null;
+let videoPage = null; // video 를 잡았을 때의 페이지 (영상이 바뀌었는지 판단)
 let adShowing = false;
 let ignoreLocalUntil = 0; // 이 시간 전에는 내 쪽 재생 이벤트를 보내지 않는다 (동기화로 생긴 이벤트, 자동재생 등)
 let localTimer = null;
@@ -586,32 +587,53 @@ function onLocalMedia() {
   }, 350);
 }
 
-function attachVideo(v) {
-  if (video) MEDIA_EVENTS.forEach((ev) => video.removeEventListener(ev, onLocalMedia));
-  video = v;
-  clearTimeout(initTimer);
-  if (!v) return;
-  MEDIA_EVENTS.forEach((ev) => v.addEventListener(ev, onLocalMedia));
-  // 새 영상: 자동재생 이벤트는 무시하고, 앱에 "Jam 재생 위치 알려줘" 요청
-  ignoreLocalUntil = Date.now() + 2000;
+// 지금 보는 영상 페이지. shared/site.js 의 docKey 와 같은 규칙 (샌드박스라 파일을 불러올 수 없어 복사)
+// 유튜브는 다음 영상(재생목록 포함)으로 넘어가도 같은 <video> 요소를 다시 쓰므로, 요소가 아니라 페이지로 새 영상을 알아챈다
+function pageKey() {
+  const h = location.hostname;
+  if (/(^|\.)youtube\.com$/.test(h) && location.pathname === '/watch') {
+    const q = new URLSearchParams(location.search);
+    if (q.get('v')) return `youtube:${q.get('v')}:${q.get('list') || ''}`;
+  }
+  return location.href.split('#')[0].replace(/\/$/, '');
+}
+
+// 새 영상이 준비되면(광고가 끝난 뒤 포함) 앱에 알린다:
+//  media-ready → Jam 재생 위치가 이 영상 것이면 따라가고, 잠시 뒤 media-init → 아무도 기준이 없으면 내가 기준이 된다
+function announceVideo(v) {
+  ignoreLocalUntil = Date.now() + 2000; // 자동재생 · 광고 끝난 뒤 다시 트는 이벤트는 내 조작이 아니다
   send('jam:media-ready');
+  clearTimeout(initTimer);
   initTimer = setTimeout(() => {
     if (video === v && !adShowing && !isAd()) send('jam:media-init', mediaState());
   }, 2200);
 }
 
+function attachVideo(v) {
+  if (video) MEDIA_EVENTS.forEach((ev) => video.removeEventListener(ev, onLocalMedia));
+  video = v;
+  videoPage = pageKey();
+  clearTimeout(initTimer);
+  if (!v) return;
+  MEDIA_EVENTS.forEach((ev) => v.addEventListener(ev, onLocalMedia));
+  announceVideo(v);
+}
+
 setInterval(() => {
   const v = pickVideo();
   if (v !== video) attachVideo(v);
+  else if (v && pageKey() !== videoPage) {
+    // 같은 <video> 요소로 다른 영상이 시작됨 (유튜브 다음 영상 · 재생목록)
+    videoPage = pageKey();
+    announceVideo(v);
+  }
   const ad = !!video && isAd();
   if (ad !== adShowing) {
     adShowing = ad;
     send('jam:ad', ad);
-    if (!ad && video) {
-      // 광고가 끝나면 유튜브가 영상을 다시 트는 이벤트는 무시하고, Jam 재생 위치로 따라간다
-      ignoreLocalUntil = Date.now() + 1500;
-      send('jam:media-ready');
-    }
+    // 광고가 끝나면 유튜브가 영상을 다시 트는 이벤트는 무시하고, Jam 재생 위치로 따라간다
+    // (새 영상 앞 광고였으면 아직 기준이 없을 수 있으므로 media-init 도 다시 보낸다)
+    if (!ad && video) announceVideo(video);
   }
   if (video && !adShowing && !video.paused) send('jam:media-tick', mediaState());
 }, 1000);

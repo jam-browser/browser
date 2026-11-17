@@ -54,7 +54,34 @@
     return false;
   }
 
-  const api = { siteOf, sameSite, isSensitiveUrl };
+  // 같은 페이지(문서)인지 판단하는 열쇠.
+  //  - 해시(#)와 끝의 / 는 무시
+  //  - 유튜브 영상 페이지는 영상(v)과 재생목록(list)만 본다.
+  //    재생목록에서 다음 영상으로 넘어가면 유튜브가 index · pp 같은 값을 스스로 바꾸는데,
+  //    이걸 "다른 페이지로 이동"으로 보면 참여자끼리 서로를 계속 다시 불러오며 무한 반복된다.
+  const YT_HOSTS = new Set(['www.youtube.com', 'youtube.com', 'm.youtube.com', 'music.youtube.com']);
+  function docKey(u) {
+    if (!u) return '';
+    const base = String(u).split('#')[0];
+    let p;
+    try {
+      p = new URL(base);
+    } catch {
+      return base.replace(/\/$/, '');
+    }
+    if (YT_HOSTS.has(p.hostname.toLowerCase()) && p.pathname === '/watch' && p.searchParams.get('v')) {
+      const list = p.searchParams.get('list');
+      return `youtube:${p.searchParams.get('v')}${list ? `:${list}` : ''}`;
+    }
+    return base.replace(/\/$/, '');
+  }
+
+  function sameDoc(a, b) {
+    if (!a || !b) return false;
+    return docKey(a) === docKey(b);
+  }
+
+  const api = { siteOf, sameSite, isSensitiveUrl, docKey, sameDoc };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.JamSite = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

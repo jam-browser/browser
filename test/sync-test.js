@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const WebSocket = require('ws');
 const { createJamServer } = require('../server/jam-server');
-const { sameSite, isSensitiveUrl } = require('../shared/site');
+const { sameSite, sameDoc, isSensitiveUrl } = require('../shared/site');
 const { newSecret, deriveKeys, makeProof, seal, open, C2S, S2C } = require('../shared/jam-crypto');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -96,6 +96,15 @@ async function main() {
   assert.ok(!isSensitiveUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ'));
   assert.ok(!isSensitiveUrl('https://www.google.com/search?q=login+tips'));
   ok('로그인·인증 주소 판별');
+
+  const yt = 'https://www.youtube.com/watch?v=AAA&list=PL1';
+  assert.ok(sameDoc(yt + '&index=2', yt + '&index=3&pp=xyz'), '재생목록 index · pp 만 다르면 같은 문서');
+  assert.ok(sameDoc('https://www.youtube.com/watch?v=AAA&t=30s', 'https://m.youtube.com/watch?v=AAA'), '시작 시간 · 모바일 주소');
+  assert.ok(!sameDoc(yt + '&index=2', 'https://www.youtube.com/watch?v=BBB&list=PL1&index=3'), '재생목록 다음 영상은 다른 문서');
+  assert.ok(!sameDoc(yt, 'https://www.youtube.com/watch?v=AAA&list=PL2'), '다른 재생목록');
+  assert.ok(sameDoc('https://example.com/a/#x', 'https://example.com/a'), '해시 · 끝 / 무시');
+  assert.ok(!sameDoc('https://example.com/a?page=1', 'https://example.com/a?page=2'), '일반 사이트는 쿼리가 다르면 다른 문서');
+  ok('같은 문서 판단 (유튜브 재생목록의 index · pp 무시)');
 
   // ---------- 서버 (내 PC 호스트 모드와 같은 설정) ----------
   const server = await createJamServer({ port: 0, localCreateOnly: true });

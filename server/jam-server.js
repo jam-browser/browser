@@ -12,7 +12,7 @@
 const http = require('http');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
-const { sameSite, isSensitiveUrl } = require('../shared/site');
+const { sameSite, sameDoc, isSensitiveUrl } = require('../shared/site');
 const { deriveKeys, checkProof, seal, open, C2S, S2C } = require('../shared/jam-crypto');
 
 const MAX_FAILURES = 8; // 잘못된 초대 코드 8번 → 10분 차단
@@ -372,7 +372,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           break;
         }
         case 'title': {
-          if (room.current && room.current.url === msg.url) {
+          if (room.current && sameDoc(room.current.url, msg.url)) {
             room.current.title = cleanText(msg.title, 200);
             broadcast(room, { type: 'current', current: room.current }, ws);
           }
