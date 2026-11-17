@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, Menu, clipboard, session, webContents, safeStorage, powerMonitor } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, clipboard, session, webContents, safeStorage, powerMonitor, protocol } = require('electron');
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 const { installChromeWebStore, uninstallExtension } = require('electron-chrome-web-store');
 const path = require('path');
@@ -12,6 +12,10 @@ const { pairWithHost } = require('../server/pair-client');
 const { isPrivateIp } = require('../server/jam-server');
 const { sameSite } = require('../shared/site');
 const { setupVault } = require('./vault');
+const { setupJamFiles, SCHEME: JAMFILE } = require('./jamfiles');
+
+// 같이 보는 파일: jamfile://<파일ID>/ (앱 준비 전에 등록해야 함)
+protocol.registerSchemesAsPrivileged([{ scheme: JAMFILE, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
 
 const DEFAULT_PORT = 3030;
 let mainWindow = null;
@@ -145,7 +149,7 @@ app.on('web-contents-created', (_e, contents) => {
       if (!lockedJamTabs.has(contents.id)) return;
       const target = event.url || legacyUrl;
       const current = contents.getURL();
-      if (!current || !/^https?:/i.test(current) || sameSite(target, current)) return;
+      if (!current || !/^(https?|jamfile):/i.test(current) || sameSite(target, current)) return;
       event.preventDefault();
       contents.hostWebContents?.send('nav-blocked', target);
     });
@@ -795,6 +799,8 @@ app.whenReady().then(() => {
   setupDownloads(ses);
   setupExtensions(ses);
   // 브라우저 계정 · 비밀번호 뱅크 · 친구 (모두 이 PC 안에서만, 메인 프로세스가 키를 들고 있음)
+  // 같이 보는 파일 (메모리에만, jamfile:// 로 보여 줌)
+  setupJamFiles({ ipcMain, dialog, getWindow: () => mainWindow, getSession: () => ses, appDir: path.join(__dirname, '..') }).attach(ses);
   vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched });
   createWindow();
   startNearbyScanner();
