@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const WebSocket = require('ws');
 const { createJamServer } = require('../server/jam-server');
-const { sameSite, isSensitiveUrl } = require('../shared/site');
+const { sameSite, sameDoc, isSensitiveUrl } = require('../shared/site');
 const { newSecret, deriveKeys, makeProof, seal, open, C2S, S2C } = require('../shared/jam-crypto');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -96,6 +96,15 @@ async function main() {
   assert.ok(!isSensitiveUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ'));
   assert.ok(!isSensitiveUrl('https://www.google.com/search?q=login+tips'));
   ok('로그인·인증 주소 판별');
+
+  const yt = 'https://www.youtube.com/watch?v=AAA&list=PL1';
+  assert.ok(sameDoc(yt + '&index=2', yt + '&index=3&pp=xyz'), '재생목록 index · pp 만 다르면 같은 문서');
+  assert.ok(sameDoc('https://www.youtube.com/watch?v=AAA&t=30s', 'https://m.youtube.com/watch?v=AAA'), '시작 시간 · 모바일 주소');
+  assert.ok(!sameDoc(yt + '&index=2', 'https://www.youtube.com/watch?v=BBB&list=PL1&index=3'), '재생목록 다음 영상은 다른 문서');
+  assert.ok(!sameDoc(yt, 'https://www.youtube.com/watch?v=AAA&list=PL2'), '다른 재생목록');
+  assert.ok(sameDoc('https://example.com/a/#x', 'https://example.com/a'), '해시 · 끝 / 무시');
+  assert.ok(!sameDoc('https://example.com/a?page=1', 'https://example.com/a?page=2'), '일반 사이트는 쿼리가 다르면 다른 문서');
+  ok('같은 문서 판단 (유튜브 재생목록의 index · pp 무시)');
 
   // ---------- 서버 (내 PC 호스트 모드와 같은 설정) ----------
   const server = await createJamServer({ port: 0, localCreateOnly: true });
@@ -218,6 +227,22 @@ async function main() {
   guest.send({ type: 'viewport', url: 'https://en.wikipedia.org/', top: { p: 'x'.repeat(700) }, w: 1, h: 1 });
   assert.equal((await host.next('viewport')).top, null);
   ok('보고 있는 영역 + 해상도 + 확대율 + 위치 앵커 공유 (너무 긴 앵커는 버림)');
+
+  // 글자 앵커 + 예비 앵커 (창 크기가 달라도 같은 내용을 찾기 위한 정보)
+  const textTop = {
+    p: '#title>h1', fx: 0.4, fy: 0.5, off: 76, t: 0, o: 12, ch: 'B', cx: 0.3, cy: 0.6,
+    alt: [{ p: '#owner>a', fx: 0.1, fy: 0.5, off: 100 }, { p: '#d', fx: 0, fy: 0, off: 124 }, { p: '#e', fx: 0, fy: 0, off: 1 }, { p: '#f', fx: 0, fy: 0, off: 1 }],
+  };
+  guest.send({ type: 'viewport', url: 'https://en.wikipedia.org/', top: textTop, bot: null, w: 900, h: 650 });
+  const tv = (await host.next('viewport')).top;
+  assert.deepEqual([tv.t, tv.o, tv.ch, tv.cx, tv.cy], [0, 12, 'B', 0.3, 0.6]);
+  assert.equal(tv.alt.length, 3);
+  assert.equal(tv.alt[0].p, '#owner>a');
+  guest.send({ type: 'cursor', url: 'https://en.wikipedia.org/', x: 0.1, y: 0.1, a: { p: '#x', fx: 2, fy: -1, t: -1, o: 3, alt: [{ p: '#y', alt: [{ p: '#z' }] }] } });
+  const ca = (await host.next('cursor')).a;
+  assert.deepEqual([ca.fx, ca.fy, ca.t, ca.o], [1, 0, undefined, undefined]);
+  assert.equal(ca.alt[0].alt, undefined);
+  ok('글자 앵커·예비 앵커 전달 (예비는 3개까지, 한 단계만, 잘못된 값은 버림)');
 
   guest.send({ type: 'viewport', url: null });
   assert.equal((await host.next('viewport')).url, null);

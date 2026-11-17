@@ -139,10 +139,47 @@ function isPinned(el) {
   return false;
 }
 
+// 글자 하나의 화면 위치 (안 보이거나 폭이 0 이면 null)
+function charRect(node, o) {
+  const range = document.createRange();
+  range.setStart(node, o);
+  range.setEnd(node, Math.min(o + 1, node.data.length));
+  const r = range.getClientRects()[0];
+  return r && r.width > 0 && r.height > 0 ? r : null;
+}
+
+// 점 아래에 실제로 있는 글자. 창 폭이 달라 글줄이 다르게 접혀도 같은 글자를 가리킬 수 있다
+function charAt(x, y) {
+  const range = document.caretRangeFromPoint?.(x, y);
+  const node = range?.startContainer;
+  if (!node || node.nodeType !== Node.TEXT_NODE || !node.data.length) return null;
+  // 캐럿은 글자 사이에 놓이므로 앞뒤 글자 중 점을 덮는 쪽을 고른다
+  for (const o of [range.startOffset, range.startOffset - 1]) {
+    if (o < 0 || o >= node.data.length) continue;
+    const r = charRect(node, o);
+    if (r && x >= r.left - 1 && x <= r.right + 1 && y >= r.top - 1 && y <= r.bottom + 1) return { node, o, r };
+  }
+  return null;
+}
+
 function anchorAt(x, y, { skipPinned = false } = {}) {
-  let el = document.elementFromPoint(x, y);
+  const el = document.elementFromPoint(x, y);
   if (!el || el === document.documentElement || el === document.body) return null;
   if (skipPinned && isPinned(el)) return null;
+  // 글자 위면 "그 글자"를 기준으로 (요소 크기 비율은 창 폭이 다르면 다른 곳을 가리킨다)
+  const c = charAt(x, y);
+  const parent = c?.node.parentElement;
+  if (parent && el.contains(c.node)) {
+    const pr = parent.getBoundingClientRect();
+    const p = pathOf(parent);
+    if (p && p.length <= 600 && pr.width >= 1 && pr.height >= 1) {
+      return {
+        p, fx: (x - pr.left) / pr.width, fy: (y - pr.top) / pr.height,
+        t: [...parent.childNodes].indexOf(c.node), o: c.o, ch: c.node.data[c.o],
+        cx: (x - c.r.left) / c.r.width, cy: (y - c.r.top) / c.r.height,
+      };
+    }
+  }
   const r = el.getBoundingClientRect();
   if (r.width < 1 || r.height < 1) return null;
   const p = pathOf(el);
@@ -150,8 +187,7 @@ function anchorAt(x, y, { skipPinned = false } = {}) {
   return { p, fx: (x - r.left) / r.width, fy: (y - r.top) / r.height };
 }
 
-// 앵커 → 내 문서 좌표 (px). 못 찾으면 null
-function resolveAnchor(a) {
+function resolveOne(a) {
   if (!a || typeof a.p !== 'string') return null;
   let el;
   try {
@@ -160,24 +196,49 @@ function resolveAnchor(a) {
     return null;
   }
   if (!el) return null;
+  // 같은 글자가 있으면 그 글자 위치
+  if (Number.isInteger(a.t)) {
+    const node = el.childNodes[a.t];
+    if (node?.nodeType === Node.TEXT_NODE && a.o < node.data.length && (a.ch == null || node.data[a.o] === a.ch)) {
+      const r = charRect(node, a.o);
+      if (r) return { x: r.left + window.scrollX + (a.cx ?? 0.5) * r.width, y: r.top + window.scrollY + (a.cy ?? 0.5) * r.height };
+    }
+  }
   const r = el.getBoundingClientRect();
   if (r.width < 1 && r.height < 1) return null;
   return { x: r.left + window.scrollX + a.fx * r.width, y: r.top + window.scrollY + a.fy * r.height };
 }
 
-// 내 화면 위/아래 가장자리를 가리키는 앵커 (가운데 열에서 고정 메뉴를 피해 찾는다)
+// 앵커 → 내 문서 좌표 (px) + 그 앵커의 off. 첫 앵커를 못 찾으면 예비 앵커(alt)를 차례로. 다 못 찾으면 null
+function resolveAnchor(a) {
+  if (!a) return null;
+  for (const c of [a, ...(Array.isArray(a.alt) ? a.alt : [])]) {
+    const pos = resolveOne(c);
+    if (pos) return { ...pos, off: c.off || 0 };
+  }
+  return null;
+}
+
+// 내 화면 위/아래 가장자리를 가리키는 앵커 (가운데 열에서 고정 메뉴를 피해 찾는다).
+// 상대 화면에는 같은 요소가 없을 수 있으므로 (창 폭에 따라 다른 배치, 사람마다 다른 추천 목록 등)
+// 서로 다른 요소로 예비 앵커를 2개 더 붙인다
 function edgeAnchor(edge) {
   const xs = [0.5, 0.35, 0.65, 0.2, 0.8].map((f) => window.innerWidth * f);
-  for (let step = 0; step < 12; step++) {
+  const found = [];
+  for (let step = 0; step < 12 && found.length < 3; step++) {
     const off = 4 + step * 24;
     const y = edge === 'top' ? off : window.innerHeight - off;
     if (y < 0 || y > window.innerHeight) break;
     for (const x of xs) {
       const a = anchorAt(x, y, { skipPinned: true });
-      if (a) return { ...a, off: edge === 'top' ? off : window.innerHeight - y };
+      if (!a || found.some((f) => f.p === a.p)) continue;
+      found.push({ ...a, off });
+      if (found.length >= 3) break;
     }
   }
-  return null;
+  if (!found.length) return null;
+  const [first, ...alt] = found;
+  return alt.length ? { ...first, alt } : first;
 }
 
 // ======================================================================
@@ -236,7 +297,7 @@ function scrollToAnchor(top, x, y, behavior) {
   const pos = resolveAnchor(top);
   window.scrollTo({
     left: x * Math.max(el.scrollWidth - window.innerWidth, 0),
-    top: pos ? pos.y - (top.off || 0) : y * Math.max(el.scrollHeight - window.innerHeight, 0),
+    top: pos ? pos.y - pos.off : y * Math.max(el.scrollHeight - window.innerHeight, 0),
     behavior,
   });
 }
@@ -390,15 +451,20 @@ function layoutView(v) {
   // 세로: 상대 화면 맨 위/맨 아래에 보이던 내용이 내 문서의 어디인지로 계산
   const t = resolveAnchor(d.top);
   const b = resolveAnchor(d.bot);
+  // 한쪽만 찾았을 때 높이는 상대 화면 높이(px)를 쓴다. 문서 길이 비율은 창 폭이 다르면 크게 틀린다
+  const screenH = d.h > 0 ? d.h : d.vh * h;
   let top = d.vy * h;
   let height = d.vh * h;
-  if (t && b && b.y > t.y) {
-    top = t.y - (d.top.off || 0);
-    height = b.y + (d.bot.off || 0) - top;
+  const span = t && b ? b.y + b.off - (t.y - t.off) : 0;
+  if (t && b && span > screenH / 3 && span < screenH * 3) {
+    top = t.y - t.off;
+    height = span;
   } else if (t) {
-    top = t.y - (d.top.off || 0);
+    top = t.y - t.off;
+    height = screenH;
   } else if (b) {
-    top = b.y + (d.bot.off || 0) - height;
+    height = screenH;
+    top = b.y + b.off - height;
   }
   // 가로: 상대에게 가로 스크롤이 없으면 페이지 전체 폭을 보고 있는 것
   const fullWidth = d.vw >= 0.99;
@@ -445,6 +511,8 @@ const relayout = () => {
   for (const v of views_.values()) layoutView(v);
 };
 window.addEventListener('resize', throttle(relayout, 100));
+// 커서가 화면에 고정된 요소(상단 메뉴 등) 위에 있으면 내가 스크롤할 때 그 요소를 따라 움직여야 한다
+window.addEventListener('scroll', throttle(() => { for (const c of cursors.values()) layoutCursor(c); }, 50), { passive: true });
 setInterval(relayout, 1500);
 
 ipcRenderer.on('jam:cursor', (_e, data) => upsertCursor(data));
@@ -459,7 +527,7 @@ ipcRenderer.on('jam:clear', () => {
 // 테스트용: 다른 사람 사각형/커서가 내 문서의 어디에 그려졌는지 알려준다
 ipcRenderer.on('jam:debug-req', () => {
   send('jam:debug', {
-    views: [...views_.entries()].map(([id, v]) => ({ id, ...v.pos })),
+    views: [...views_.entries()].map(([id, v]) => ({ id, ...v.pos, top0: v.data.top, bot0: v.data.bot })),
     cursors: [...cursors.entries()].map(([id, c]) => ({ id, ...c.pos })),
     scrollY: window.scrollY,
   });
@@ -551,6 +619,7 @@ document.addEventListener(
 // 동영상 재생 맞추기 (+ 유튜브 광고 예외)
 // ======================================================================
 let video = null;
+let videoPage = null; // video 를 잡았을 때의 페이지 (영상이 바뀌었는지 판단)
 let adShowing = false;
 let ignoreLocalUntil = 0; // 이 시간 전에는 내 쪽 재생 이벤트를 보내지 않는다 (동기화로 생긴 이벤트, 자동재생 등)
 let localTimer = null;
@@ -587,32 +656,53 @@ function onLocalMedia() {
   }, 350);
 }
 
-function attachVideo(v) {
-  if (video) MEDIA_EVENTS.forEach((ev) => video.removeEventListener(ev, onLocalMedia));
-  video = v;
-  clearTimeout(initTimer);
-  if (!v) return;
-  MEDIA_EVENTS.forEach((ev) => v.addEventListener(ev, onLocalMedia));
-  // 새 영상: 자동재생 이벤트는 무시하고, 앱에 "Jam 재생 위치 알려줘" 요청
-  ignoreLocalUntil = Date.now() + 2000;
+// 지금 보는 영상 페이지. shared/site.js 의 docKey 와 같은 규칙 (샌드박스라 파일을 불러올 수 없어 복사)
+// 유튜브는 다음 영상(재생목록 포함)으로 넘어가도 같은 <video> 요소를 다시 쓰므로, 요소가 아니라 페이지로 새 영상을 알아챈다
+function pageKey() {
+  const h = location.hostname;
+  if (/(^|\.)youtube\.com$/.test(h) && location.pathname === '/watch') {
+    const q = new URLSearchParams(location.search);
+    if (q.get('v')) return `youtube:${q.get('v')}:${q.get('list') || ''}`;
+  }
+  return location.href.split('#')[0].replace(/\/$/, '');
+}
+
+// 새 영상이 준비되면(광고가 끝난 뒤 포함) 앱에 알린다:
+//  media-ready → Jam 재생 위치가 이 영상 것이면 따라가고, 잠시 뒤 media-init → 아무도 기준이 없으면 내가 기준이 된다
+function announceVideo(v) {
+  ignoreLocalUntil = Date.now() + 2000; // 자동재생 · 광고 끝난 뒤 다시 트는 이벤트는 내 조작이 아니다
   send('jam:media-ready');
+  clearTimeout(initTimer);
   initTimer = setTimeout(() => {
     if (video === v && !adShowing && !isAd()) send('jam:media-init', mediaState());
   }, 2200);
 }
 
+function attachVideo(v) {
+  if (video) MEDIA_EVENTS.forEach((ev) => video.removeEventListener(ev, onLocalMedia));
+  video = v;
+  videoPage = pageKey();
+  clearTimeout(initTimer);
+  if (!v) return;
+  MEDIA_EVENTS.forEach((ev) => v.addEventListener(ev, onLocalMedia));
+  announceVideo(v);
+}
+
 setInterval(() => {
   const v = pickVideo();
   if (v !== video) attachVideo(v);
+  else if (v && pageKey() !== videoPage) {
+    // 같은 <video> 요소로 다른 영상이 시작됨 (유튜브 다음 영상 · 재생목록)
+    videoPage = pageKey();
+    announceVideo(v);
+  }
   const ad = !!video && isAd();
   if (ad !== adShowing) {
     adShowing = ad;
     send('jam:ad', ad);
-    if (!ad && video) {
-      // 광고가 끝나면 유튜브가 영상을 다시 트는 이벤트는 무시하고, Jam 재생 위치로 따라간다
-      ignoreLocalUntil = Date.now() + 1500;
-      send('jam:media-ready');
-    }
+    // 광고가 끝나면 유튜브가 영상을 다시 트는 이벤트는 무시하고, Jam 재생 위치로 따라간다
+    // (새 영상 앞 광고였으면 아직 기준이 없을 수 있으므로 media-init 도 다시 보낸다)
+    if (!ad && video) announceVideo(video);
   }
   if (video && !adShowing && !video.paused) send('jam:media-tick', mediaState());
 }, 1000);

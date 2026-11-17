@@ -39,4 +39,4 @@ http
     }
     html('not found', 404);
   })
-  .listen(8765, '127.0.0.1', () => console.log('test site on 8765'));
+  .listen(require('./ports').site, '127.0.0.1', () => console.log('test site on ' + require('./ports').site));

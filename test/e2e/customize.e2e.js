@@ -1,9 +1,10 @@
 // E2E: browser features + UI customization (single app instance on CDP 9301)
+const PORTS = require('./ports');
 const WebSocket = require(process.argv[2] + '/node_modules/ws');
 const fs = require('fs');
 const path = require('path');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const SITE = 'http://localhost:8765';
+const SITE = `http://localhost:${PORTS.site}`;
 const OUT = path.dirname(process.argv[1]);
 
 async function target(port, pick) {
@@ -41,7 +42,7 @@ async function until(label, fn, ms = 15000) {
 const step = (s) => console.log('✓', s);
 
 (async () => {
-  const A = await target(9301, (x) => x.type === 'page');
+  const A = await target(PORTS.host, (x) => x.type === 'page');
   await until('ready', () => A.ev(`typeof ui==='object' && tabs.length > 0`));
   const shot = async (name) => {
     const s = await A.cmd('Page.captureScreenshot', { format: 'png' });

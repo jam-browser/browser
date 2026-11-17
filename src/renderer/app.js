@@ -32,11 +32,8 @@ function toUrl(input) {
   return ui.searchUrl(t);
 }
 
-// 해시(#)만 다른 주소는 같은 문서로 본다
-function sameDoc(a, b) {
-  if (!a || !b) return false;
-  return a.split('#')[0].replace(/\/$/, '') === b.split('#')[0].replace(/\/$/, '');
-}
+// 같은 문서인지: 해시(#)만 다르거나, 유튜브는 같은 영상·재생목록이면 같은 문서 (shared/site.js)
+const { sameDoc } = JamSite;
 
 function prettyUrl(u) {
   try {
@@ -264,12 +261,22 @@ function activateTab(tab) {
   }
   renderTabs();
   updateToolbar();
+  notifyExtActiveTab(tab);
   updateDrift();
   renderMinimap();
   ui.afterActivate(tab);
   if (typeof updateClipSiteBanner === 'function') updateClipSiteBanner();
   renderLoginBanner();
   renderFollowFrame();
+}
+
+// 확장 프로그램에 지금 보고 있는 탭을 알린다 (아직 webview 가 안 붙었으면 붙은 뒤에)
+function notifyExtActiveTab(tab) {
+  const id = tabWcId(tab);
+  if (id != null) return jamApp.extTabActivated(id);
+  tab.webview.addEventListener('did-attach', () => {
+    if (tab === activeTab) jamApp.extTabActivated(tabWcId(tab));
+  }, { once: true });
 }
 
 function closeTab(tab) {
@@ -285,6 +292,20 @@ function closeTab(tab) {
   else if (tab === activeTab) activateTab(tabs[Math.min(i, tabs.length - 1)]);
   else renderTabs();
 }
+
+// ---------- 탭 소리 ---------- (tabWcId 는 아래 '확장 프로그램' 부분에 있음)
+function setTabMuted(tab, muted) {
+  tab.muted = muted;
+  if (tab.ready) tab.webview.setAudioMuted(muted);
+  else tab.webview.addEventListener('dom-ready', () => tab.webview.setAudioMuted(tab.muted), { once: true });
+  renderTabs();
+}
+jamApp.onTabAudio(({ wcId, audible }) => {
+  const tab = tabs.find((t) => tabWcId(t) === wcId);
+  if (!tab || tab.audible === audible) return;
+  tab.audible = audible;
+  renderTabs();
+});
 
 function renderTabs() {
   $('#tabs').replaceChildren(
@@ -302,6 +323,17 @@ function renderTabs() {
         fav,
         t === jam.tab ? el('span', { class: 'jam-badge' }, 'JAM') : null,
         el('span', { class: 'title' }, t.title || prettyUrl(t.url)),
+        // 소리 나는 탭 / 음소거한 탭: 누르면 음소거 켜기·끄기
+        t.audible || t.muted
+          ? el('button', {
+              class: `audio${t.muted ? ' muted' : ''}`,
+              title: t.muted ? '탭 음소거 해제' : '탭 음소거',
+              onclick: (e) => {
+                e.stopPropagation();
+                setTabMuted(t, !t.muted);
+              },
+            }, t.muted ? '🔇' : '🔊')
+          : null,
         el('button', {
           class: 'close',
           title: '탭 닫기',
@@ -349,6 +381,26 @@ $('#reload').addEventListener('click', () => activeTab?.webview.reload());
 $('#new-tab').addEventListener('click', () => createTab());
 
 jamApp.onOpenTab((url) => createTab(url));
+
+// ---------- Chrome 확장 프로그램 ----------
+const tabWcId = (tab) => {
+  try { return tab.webview.getWebContentsId(); } catch { return null; } // 아직 붙기 전
+};
+const tabByWcId = (wcId) => tabs.find((t) => tabWcId(t) === wcId);
+// 확장 프로그램이 연 탭 (chrome.tabs.create): 만든 뒤 webContents id 를 돌려준다
+jamApp.onExtCreateTab(({ reqId, url, active }) => {
+  const tab = createTab(url || ui.newTabUrl(), { activate: active });
+  tab.webview.addEventListener('did-attach', () => jamApp.extTabCreated(reqId, tabWcId(tab)), { once: true });
+});
+jamApp.onExtSelectTab((wcId) => {
+  const tab = tabByWcId(wcId);
+  if (tab && tab !== activeTab) activateTab(tab);
+});
+jamApp.onExtCloseTab((wcId) => {
+  const tab = tabByWcId(wcId);
+  if (tab) closeTab(tab);
+});
+$('#ext-store').addEventListener('click', () => createTab('https://chromewebstore.google.com/'));
 jamApp.onNavBlocked((url) => blockedNav(url));
 jamApp.onShortcut((action) => {
   const i = tabs.indexOf(activeTab);
@@ -1097,7 +1149,8 @@ function onJamTabNavigated(tab, url) {
     if (sameDoc(url, jam.room.current?.url)) finishLoginWait(true);
     return;
   }
-  if (url === jam.lastSyncedUrl) return updateDrift();
+  // 방금 맞춘 페이지에서 사이트가 주소만 고친 경우(유튜브 재생목록 index 등)는 이동으로 보지 않는다
+  if (sameDoc(url, jam.lastSyncedUrl)) return updateDrift();
   // 따라가기를 켜 둔 상태에서, 이동할 수 있는 곳이면 모두 함께 이동
   if (jam.follow && jam.canGo(url)) {
     jam.lastSyncedUrl = url;
@@ -1110,7 +1163,7 @@ function onJamTabNavigated(tab, url) {
 
 function onJamTabTitle(tab) {
   if (!jam.active) return;
-  if (jam.room.current && jam.room.current.url === tab.url && isShareable(tab.url)) {
+  if (jam.room.current && sameDoc(jam.room.current.url, tab.url) && isShareable(tab.url)) {
     jam.room.current.title = tab.title;
     jam.send({ type: 'title', url: tab.url, title: tab.title });
     renderNow();
@@ -1289,7 +1342,7 @@ function handleMessage(msg) {
           renderLoginBanner(); // 로그인 중에는 이동하지 않고, 로그인 뒤 갈 곳만 최신으로 바꿔둔다
         } else {
           jam.lastSyncedUrl = msg.url;
-          if (tab.url !== msg.url) followNavigate(msg.url);
+          if (!sameDoc(tab.url, msg.url)) followNavigate(msg.url); // 이미 같은 영상·문서면 다시 불러오지 않는다
         }
       }
       renderNow();

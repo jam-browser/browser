@@ -1,5 +1,7 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, Menu, clipboard, session, safeStorage, powerMonitor, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, clipboard, session, webContents, safeStorage, powerMonitor, protocol } = require('electron');
+const { ElectronChromeExtensions } = require('electron-chrome-extensions');
+const { installChromeWebStore, uninstallExtension } = require('electron-chrome-web-store');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
@@ -28,6 +30,14 @@ let nearbyList = [];
 let pairing = null; // 진행 중인 근처 페어링
 let pendingCapture = null; // 화면 미러링: 앱이 방금 요청한 탭 캡처 { wcId, until }
 const beaconId = crypto.randomBytes(12).toString('base64url');
+
+// 웹사이트에는 일반 Chromium 브라우저로 보이게 한다.
+// 기본 UA 에 붙는 "Electron/x" · "jam-browser/x" 때문에 Google 로그인 등 일부 사이트가 막는다.
+// 버전도 실제 Chrome 처럼 주 버전만 남긴다 (Chrome/156.0.0.0).
+const CHROME_UA = app.userAgentFallback
+  .replace(/\s+(Electron|jam-browser|Jam ?Browser)\/\S+/gi, '')
+  .replace(/Chrome\/(\d+)\.[\d.]+/, 'Chrome/$1.0.0.0');
+app.userAgentFallback = CHROME_UA;
 
 // Jam 탭의 webContents id → 다른 사이트 이동이 잠겨 있는지
 const lockedJamTabs = new Set();
@@ -68,6 +78,15 @@ function createWindow() {
       ...(offscreen ? { backgroundThrottling: false } : {}),
     },
   });
+  // Jam 테스트 환경(npm run jam)에서는 창 제목에 [host] · [guest] 를 붙여 구분한다
+  const devInstance = !app.isPackaged && process.env.JAM_DEV_INSTANCE;
+  if (devInstance) {
+    mainWindow.setTitle(`Jam Browser [${devInstance}]`);
+    mainWindow.on('page-title-updated', (e) => e.preventDefault());
+  }
+  // 웹페이지 탭(webview)이 붙을 때마다 확장 프로그램(chrome.tabs 등)이 알 수 있게 등록
+  const win = mainWindow;
+  win.webContents.on('did-attach-webview', (_e, wc) => extensions?.addTab(wc, win));
   if (offscreen) mainWindow.showInactive();
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('closed', () => (mainWindow = null));
@@ -107,9 +126,6 @@ function shortcutFor(input) {
 }
 
 app.on('web-contents-created', (_e, contents) => {
-  // 소리 끄기: 앱 창과 모든 웹페이지의 오디오를 음소거
-  contents.setAudioMuted(true);
-
   // 웹페이지용 webview에 보안 설정 + Jam 스크립트(커서/스크롤 동기화)를 주입
   contents.on('will-attach-webview', (_ev, webPreferences) => {
     delete webPreferences.preloadURL;
@@ -139,6 +155,11 @@ app.on('web-contents-created', (_e, contents) => {
     });
     const id = contents.id;
     contents.once('destroyed', () => lockedJamTabs.delete(id));
+
+    // 소리 나는 탭 표시용: 소리가 나기 시작/멈추면 앱 UI 에 알린다 (음소거는 탭마다 앱 UI 에서)
+    contents.on('audio-state-changed', (e) => {
+      contents.hostWebContents?.send('tab-audio', { wcId: id, audible: !!e.audible });
+    });
   }
 
   contents.on('before-input-event', (event, input) => {
@@ -654,6 +675,95 @@ function setupAutoUpdate() {
 }
 ipcMain.handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged, update: updateState }));
 
+// ======================================================================
+// Chrome 확장 프로그램 (Chrome 웹 스토어에서 설치)
+// ======================================================================
+let extensions = null;
+let quitting = false;
+let extTabReq = 0;
+const pendingExtTabs = new Map(); // 요청 번호 → resolve
+
+// 확장 프로그램이 chrome.tabs.create 로 탭을 열 때: 앱 UI 에 새 탭을 만들게 하고 webContents 를 받는다
+function createTabForExtension(details) {
+  if (!mainWindow) return Promise.reject(new Error('창이 없어요'));
+  const reqId = ++extTabReq;
+  const win = mainWindow;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingExtTabs.delete(reqId);
+      reject(new Error('탭을 만들지 못했어요'));
+    }, 10000);
+    pendingExtTabs.set(reqId, (wcId) => {
+      clearTimeout(timer);
+      const wc = webContents.fromId(wcId);
+      if (wc) resolve([wc, win]);
+      else reject(new Error('탭을 찾지 못했어요'));
+    });
+    win.webContents.send('ext:create-tab', { reqId, url: details.url, active: details.active !== false });
+  });
+}
+ipcMain.on('ext:tab-created', (_e, { reqId, wcId }) => {
+  const done = pendingExtTabs.get(reqId);
+  pendingExtTabs.delete(reqId);
+  if (done) done(wcId);
+});
+ipcMain.on('ext:tab-activated', (_e, wcId) => {
+  const wc = webContents.fromId(wcId);
+  if (wc && extensions) extensions.selectTab(wc);
+});
+
+// 웹 스토어에서 "Chrome에 추가"를 누르면 한 번 더 묻는다
+async function confirmExtensionInstall({ localizedName, manifest, browserWindow }) {
+  const perms = [...(manifest.permissions || []), ...(manifest.host_permissions || [])]
+    .filter((p) => typeof p === 'string');
+  const allSites = perms.some((p) => p === '<all_urls>' || /^\*:\/\/\*\//.test(p) || /^https?:\/\/\*\//.test(p));
+  const lines = [
+    '확장 프로그램은 설치한 내 PC의 탭에서만 동작해요. 다른 Jam 참여자에게는 설치되지 않아요.',
+  ];
+  if (allSites) lines.push('⚠️ 이 확장 프로그램은 모든 웹사이트의 내용을 읽고 바꿀 수 있어요 (Jam 탭 포함).');
+  if (perms.length) lines.push('', '요청하는 권한: ' + perms.slice(0, 12).join(', ') + (perms.length > 12 ? ' …' : ''));
+  const { response } = await dialog.showMessageBox(browserWindow || mainWindow, {
+    type: 'question',
+    buttons: ['추가', '취소'],
+    defaultId: 1,
+    cancelId: 1,
+    title: '확장 프로그램 추가',
+    message: `"${localizedName}" 을(를) 추가할까요?`,
+    detail: lines.join('\n'),
+    noLink: true,
+  });
+  return { action: response === 0 ? 'allow' : 'deny' };
+}
+
+function setupExtensions(ses) {
+  extensions = new ElectronChromeExtensions({
+    session: ses,
+    createTab: createTabForExtension,
+    selectTab: (wc) => mainWindow?.webContents.send('ext:select-tab', wc.id),
+    removeTab: (wc) => mainWindow?.webContents.send('ext:close-tab', wc.id),
+  });
+  // 앱 UI 창(기본 세션)에 확장 아이콘 줄을 보여 준다
+  ElectronChromeExtensions.handleCRXProtocol(session.defaultSession);
+  session.defaultSession.registerPreloadScript({
+    id: 'jam-toolbar',
+    type: 'frame',
+    filePath: path.join(__dirname, 'generated', 'toolbar-preload.js'),
+  });
+  installChromeWebStore({ session: ses, beforeInstall: confirmExtensionInstall }).catch((e) =>
+    console.error('Chrome 웹 스토어 준비 실패:', e)
+  );
+  // 아이콘 우클릭 → "Remove extension" 은 지금 세션에서만 내리므로, 파일도 지워서 다시 켜도 안 돌아오게 한다
+  // (자동 업데이트도 내렸다가 바로 다시 올리므로, 몇 초 뒤에도 없을 때만 지운다)
+  ses.extensions.on('extension-unloaded', (_e, ext) => {
+    if (quitting) return;
+    setTimeout(() => {
+      if (quitting || ses.extensions.getExtension(ext.id)) return;
+      uninstallExtension(ext.id, { session: ses }).catch(() => {});
+    }, 5000);
+  });
+}
+app.on('before-quit', () => (quitting = true));
+
 ipcMain.on('jam:lock', (_e, { wcId, locked }) => {
   if (locked) lockedJamTabs.add(wcId);
   else lockedJamTabs.delete(wcId);
@@ -662,6 +772,7 @@ ipcMain.on('jam:lock', (_e, { wcId, locked }) => {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(null);
   const ses = session.fromPartition('persist:jam');
+  ses.setUserAgent(CHROME_UA);
   // iframe 안에서 클립보드에 쓰는 경우까지 잡기 위해, 클립보드 쓰기 권한 요청도 앱에 알린다
   const notifyClipboard = (wc, permission) => {
     if (permission !== 'clipboard-sanitized-write' || !wc) return;
@@ -686,6 +797,7 @@ app.whenReady().then(() => {
     return ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, { securityOrigin: origin, ...details });
   });
   setupDownloads(ses);
+  setupExtensions(ses);
   // 브라우저 계정 · 비밀번호 뱅크 · 친구 (모두 이 PC 안에서만, 메인 프로세스가 키를 들고 있음)
   // 같이 보는 파일 (메모리에만, jamfile:// 로 보여 줌)
   setupJamFiles({ ipcMain, dialog, getWindow: () => mainWindow, getSession: () => ses, appDir: path.join(__dirname, '..') }).attach(ses);

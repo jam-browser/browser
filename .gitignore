@@ -8,3 +8,7 @@ test/e2e/*.log
 test/e2e/*.err
 # 내 PC 작업 환경 메모 (경로 등 개인 정보 → 공개하지 않음)
 LOCAL-SETUP.md
+# Jam 테스트 환경(npm run jam) 프로필
+.jam-dev/
+# 자동 생성 (npm install 때 scripts/build-toolbar-preload.js 가 만듦)
+src/generated/

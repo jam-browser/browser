@@ -1,6 +1,7 @@
 // Resolution / view-size test: host and guest look at the same Wikipedia article with
 // different window sizes and zoom levels. Checks that the guest's viewport box and cursor
 // are drawn on the host's page at the same *content* the guest is looking at.
+const PORTS = require('./ports');
 const WebSocket = require(process.argv[2] + '/node_modules/ws');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PAGE = 'https://en.wikipedia.org/wiki/Jam_session';
@@ -36,8 +37,8 @@ async function until(label, fn, ms = 15000) {
 }
 
 (async () => {
-  const A = await target(9301, (x) => x.type === 'page');
-  const B = await target(9302, (x) => x.type === 'page');
+  const A = await target(PORTS.host, (x) => x.type === 'page');
+  const B = await target(PORTS.guest, (x) => x.type === 'page');
   for (const P of [A, B]) for (let i = 0; i < 40 && !(await P.ev(`typeof jam==='object'`)); i++) await sleep(250);
 
   await A.ev(`navigateTab(activeTab, '${PAGE}'); 1`);
@@ -51,8 +52,8 @@ async function until(label, fn, ms = 15000) {
   await sleep(2000);
   const guestId = await B.ev(`jam.you.id`);
 
-  const HW = await target(9301, (x) => x.type === 'webview' && x.url.includes('Jam_session')); // host page
-  const GW = await target(9302, (x) => x.type === 'webview' && x.url.includes('Jam_session')); // guest page
+  const HW = await target(PORTS.host, (x) => x.type === 'webview' && x.url.includes('Jam_session')); // host page
+  const GW = await target(PORTS.guest, (x) => x.type === 'webview' && x.url.includes('Jam_session')); // guest page
 
   const hostDebug = async () => {
     await A.ev(`window.__jamDebug = null; jam.tab.webview.send('jam:debug-req'); 1`);
@@ -120,8 +121,10 @@ async function until(label, fn, ms = 15000) {
 
   // scroll following across different sizes (guest still at 1600×900)
   await A.ev(`jam.followScroll = true; document.querySelector('#follow-scroll').checked = true; 1`);
-  await GW.ev(`(() => { const h = document.querySelectorAll('#bodyContent h2, #bodyContent h3')[6]; window.scrollTo(0, h.getBoundingClientRect().top + scrollY - 80); return 1; })()`);
-  await sleep(2000);
+  // 실제 휠 입력으로 스크롤한다 (앱은 사람이 직접 한 스크롤만 다른 사람에게 보낸다. 스크립트 scrollTo 는 무시됨)
+  const delta = await GW.ev(`Math.round(document.querySelectorAll('#bodyContent h2, #bodyContent h3')[6].getBoundingClientRect().top - 80)`);
+  await GW.cmd('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 200, y: 200, deltaX: 0, deltaY: delta });
+  await sleep(2500);
   const gOff = await GW.ev(`document.querySelectorAll('#bodyContent h2, #bodyContent h3')[6].getBoundingClientRect().top`);
   const hOff = await HW.ev(`document.querySelectorAll('#bodyContent h2, #bodyContent h3')[6].getBoundingClientRect().top`);
   const scrollOk = Math.abs(gOff - hOff) < 60;
