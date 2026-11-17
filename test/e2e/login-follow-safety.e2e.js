@@ -1,8 +1,9 @@
 // E2E: login wait, follow-person overlay, panel hide, clipboard warning, download quarantine, remote-download block.
+const PORTS = require('./ports');
 const WebSocket = require(process.argv[2] + '/node_modules/ws');
 const fs = require('fs');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const SITE = 'http://localhost:8765';
+const SITE = `http://localhost:${PORTS.site}`;
 
 async function target(port, pick) {
   let t;
@@ -40,8 +41,8 @@ async function until(label, fn, ms = 15000) {
 const step = (s) => console.log('✓', s);
 
 (async () => {
-  const A = await target(9301, (x) => x.type === 'page');
-  const B = await target(9302, (x) => x.type === 'page');
+  const A = await target(PORTS.host, (x) => x.type === 'page');
+  const B = await target(PORTS.guest, (x) => x.type === 'page');
   for (const P of [A, B]) await until('app ready', () => P.ev(`typeof jam==='object' && typeof downloadList==='object'`));
   const inPage = (P, code, gesture = false) => P.ev(`jam.tab.webview.executeJavaScript(${JSON.stringify(code)}, ${gesture})`);
 

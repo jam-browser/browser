@@ -10,6 +10,7 @@
   "scripts": {
     "postinstall": "node scripts/build-toolbar-preload.js",
     "start": "electron .",
+    "jam": "node scripts/jam-dev.js",
     "test": "node test/sync-test.js && node test/relay-test.js && node test/vault-test.js && node test/access-test.js && node test/nearby-test.js && node test/mirror-test.js",
     "icon": "electron scripts/make-icon.js",
     "dist": "electron-builder --win --publish never",

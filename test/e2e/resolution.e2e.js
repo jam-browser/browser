@@ -1,6 +1,7 @@
 // Resolution / view-size test: host and guest look at the same Wikipedia article with
 // different window sizes and zoom levels. Checks that the guest's viewport box and cursor
 // are drawn on the host's page at the same *content* the guest is looking at.
+const PORTS = require('./ports');
 const WebSocket = require(process.argv[2] + '/node_modules/ws');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const PAGE = 'https://en.wikipedia.org/wiki/Jam_session';
@@ -36,8 +37,8 @@ async function until(label, fn, ms = 15000) {
 }
 
 (async () => {
-  const A = await target(9301, (x) => x.type === 'page');
-  const B = await target(9302, (x) => x.type === 'page');
+  const A = await target(PORTS.host, (x) => x.type === 'page');
+  const B = await target(PORTS.guest, (x) => x.type === 'page');
   for (const P of [A, B]) for (let i = 0; i < 40 && !(await P.ev(`typeof jam==='object'`)); i++) await sleep(250);
 
   await A.ev(`navigateTab(activeTab, '${PAGE}'); 1`);
@@ -51,8 +52,8 @@ async function until(label, fn, ms = 15000) {
   await sleep(2000);
   const guestId = await B.ev(`jam.you.id`);
 
-  const HW = await target(9301, (x) => x.type === 'webview' && x.url.includes('Jam_session')); // host page
-  const GW = await target(9302, (x) => x.type === 'webview' && x.url.includes('Jam_session')); // guest page
+  const HW = await target(PORTS.host, (x) => x.type === 'webview' && x.url.includes('Jam_session')); // host page
+  const GW = await target(PORTS.guest, (x) => x.type === 'webview' && x.url.includes('Jam_session')); // guest page
 
   const hostDebug = async () => {
     await A.ev(`window.__jamDebug = null; jam.tab.webview.send('jam:debug-req'); 1`);

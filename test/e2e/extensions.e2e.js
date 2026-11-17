@@ -1,4 +1,4 @@
-// Chrome 호환성: User-Agent 정리, 확장 아이콘 줄, Chrome 웹 스토어 지원 (호스트 앱 9301 하나만 사용)
+// Chrome 호환성: User-Agent 정리, 확장 아이콘 줄, Chrome 웹 스토어 지원 (호스트 앱 하나만 사용, 포트는 ports.js)
 const WebSocket = require(process.argv[2] + '/node_modules/ws');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -41,7 +41,7 @@ function ok(cond, label, extra) {
 }
 
 (async () => {
-  const host = await page(9301);
+  const host = await page(require("./ports").host);
   const inTab = (js) => host.ev(`activeTab.webview.executeJavaScript(${JSON.stringify(js)})`);
   const openTab = async (url) => {
     await host.ev(`createTab(${JSON.stringify(url)}); true`);

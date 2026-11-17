@@ -74,6 +74,12 @@ function createWindow() {
       ...(offscreen ? { backgroundThrottling: false } : {}),
     },
   });
+  // Jam 테스트 환경(npm run jam)에서는 창 제목에 [host] · [guest] 를 붙여 구분한다
+  const devInstance = !app.isPackaged && process.env.JAM_DEV_INSTANCE;
+  if (devInstance) {
+    mainWindow.setTitle(`Jam Browser [${devInstance}]`);
+    mainWindow.on('page-title-updated', (e) => e.preventDefault());
+  }
   // 웹페이지 탭(webview)이 붙을 때마다 확장 프로그램(chrome.tabs 등)이 알 수 있게 등록
   const win = mainWindow;
   win.webContents.on('did-attach-webview', (_e, wc) => extensions?.addTab(wc, win));
