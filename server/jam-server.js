@@ -80,10 +80,20 @@ function int(n, max) {
   if (!Number.isFinite(n)) return 0;
   return Math.min(max, Math.max(0, n));
 }
-// 화면 위치 앵커: { p: 요소 경로, fx/fy: 요소 안 위치 비율, off: 화면 가장자리에서 떨어진 px }
-function anchor(a) {
+// 화면 위치 앵커: { p: 요소 경로, fx/fy: 요소 안 위치 비율, off: 화면 가장자리에서 떨어진 px,
+//   t/o/ch/cx/cy: 그 요소의 t번째 글자 노드의 o번째 글자(ch)와 글자 안 위치 비율, alt: 예비 앵커 }
+function anchor(a, nested = false) {
   if (!a || typeof a !== 'object' || typeof a.p !== 'string' || !a.p || a.p.length > 600) return null;
-  return { p: a.p, fx: ratio(a.fx), fy: ratio(a.fy), off: int(a.off, 2000) };
+  const out = { p: a.p, fx: ratio(a.fx), fy: ratio(a.fy), off: int(a.off, 2000) };
+  if (Number.isInteger(a.t) && Number.isInteger(a.o) && a.t >= 0 && a.t < 10000 && a.o >= 0 && a.o < 1e6) {
+    Object.assign(out, { t: a.t, o: a.o, cx: ratio(a.cx), cy: ratio(a.cy) });
+    if (typeof a.ch === 'string') out.ch = a.ch.slice(0, 2);
+  }
+  if (!nested && Array.isArray(a.alt)) {
+    const alt = a.alt.slice(0, 3).map((x) => anchor(x, true)).filter(Boolean);
+    if (alt.length) out.alt = alt;
+  }
+  return out;
 }
 function cleanText(s, max) {
   return String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
