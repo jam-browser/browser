@@ -1,6 +1,7 @@
 // E2E: 중계 서버를 거쳐 참여 (호스트 9301, 게스트 9302)
 //   중계 서버 주소: JAM_RELAY_ADDR (기본 127.0.0.1:3031 — backend 저장소에서 node jam-relay.js 로 미리 띄워 둘 것)
 //   예) 실제 서버로: JAM_RELAY_ADDR=공인IP:3031
+const PORTS = require('./ports');
 const WebSocket = require(process.argv[2] + '/node_modules/ws');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const RELAY = process.env.JAM_RELAY_ADDR || '127.0.0.1:3031';
@@ -42,8 +43,8 @@ async function until(label, fn, ms = 15000) {
 const step = (s) => console.log('✓', s);
 
 (async () => {
-  const A = await page(9301);
-  const B = await page(9302);
+  const A = await page(PORTS.host);
+  const B = await page(PORTS.guest);
 
   await A.ev(`navigateTab(activeTab, 'https://example.com/'); 1`);
   await until('host page', () => A.ev(`activeTab.url === 'https://example.com/' && !activeTab.loading`));

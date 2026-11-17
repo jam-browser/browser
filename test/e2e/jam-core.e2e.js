@@ -1,4 +1,5 @@
 // Drives two running Jam Browser instances (CDP 9301 host, 9302 guest).
+const PORTS = require('./ports');
 const WebSocket = require(process.argv[2] + '/node_modules/ws');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -42,8 +43,8 @@ async function until(label, fn, ms = 15000) {
 const step = (s) => console.log('✓', s);
 
 (async () => {
-  const A = await page(9301);
-  const B = await page(9302);
+  const A = await page(PORTS.host);
+  const B = await page(PORTS.guest);
   const inPage = (P, code) => P.ev(`jam.tab.webview.executeJavaScript(${JSON.stringify(code)})`);
 
   // --- start + join on example.com

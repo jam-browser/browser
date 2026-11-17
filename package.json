@@ -9,6 +9,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
+    "jam": "node scripts/jam-dev.js",
     "test": "node test/sync-test.js && node test/relay-test.js",
     "icon": "electron scripts/make-icon.js",
     "dist": "electron-builder --win --publish never",

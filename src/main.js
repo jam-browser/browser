@@ -48,6 +48,12 @@ function createWindow() {
       webviewTag: true,
     },
   });
+  // Jam 테스트 환경(npm run jam)에서는 창 제목에 [host] · [guest] 를 붙여 구분한다
+  const devInstance = !app.isPackaged && process.env.JAM_DEV_INSTANCE;
+  if (devInstance) {
+    mainWindow.setTitle(`Jam Browser [${devInstance}]`);
+    mainWindow.on('page-title-updated', (e) => e.preventDefault());
+  }
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('closed', () => (mainWindow = null));
   mainWindow.on('enter-full-screen', () => mainWindow.webContents.send('fullscreen', true));

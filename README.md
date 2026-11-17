@@ -83,9 +83,24 @@
 npm install
 node node_modules/electron/install.js   # npm 이 Electron 본체를 받지 않았을 때
 npm start          # 실행
+npm run jam        # Jam 테스트 환경: 호스트 + 게스트 창 + 로컬 중계 서버
 npm test           # 서버 테스트 (+ backend 저장소가 옆 폴더에 있으면 중계 연동 테스트)
 npm run dist       # 설치 파일 만들기 (dist/)
 ```
+
+### Jam 테스트 환경 (`npm run jam`)
+
+한 PC 에서 Jam 을 직접 해 볼 수 있게 앱 두 개와 중계 서버를 함께 띄워요. Ctrl+C 로 전부 종료.
+
+| | |
+| --- | --- |
+| 창 | `Jam Browser [host]`, `Jam Browser [guest]` — 프로필이 따로라 로그인·설정이 섞이지 않고, `.jam-dev/` 에 남아서 다음에도 유지돼요 |
+| 중계 서버 | backend 저장소가 옆 폴더(`../backend`)에 있으면 `127.0.0.1:3031` 로 같이 떠요. 호스트 Jam 패널의 중계 서버 주소에 넣으면 인터넷 방식(`jamr://`)도 시험할 수 있어요 |
+| 같은 네트워크 방식 | 호스트가 받은 `jam://…` 초대 코드를 게스트에 그대로 붙여 넣으면 돼요 |
+
+옵션 (`npm run jam -- <옵션>`): `--guests 2` 게스트 여러 명 · `--fresh` 프로필 지우고 새로 · `--no-relay` 중계 서버 없이 · `--debug` 각 창에 CDP 디버그 포트 (비어 있는 포트를 골라서 출력)
+
+E2E 테스트는 [`test/e2e`](test/e2e) 참고. Windows 가 기본 포트를 예약해 둔 PC 에서는 `JAM_E2E_HOST_PORT` · `JAM_E2E_GUEST_PORT` · `JAM_E2E_SITE_PORT` 로 바꿔요.
 
 릴리스: `package.json` 의 버전을 올리고 `npm run dist` 로 만든 설치 파일을 `gh release create v버전 …` 으로 올리면, 설치된 앱들이 자동으로 업데이트해요 (자동 빌드 설정은 [`ci/`](ci)).
 
