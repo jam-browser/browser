@@ -5,6 +5,9 @@ const os = require('os');
 const crypto = require('crypto');
 const { createJamServer } = require('../server/jam-server');
 const { startRelayTunnel } = require('../server/relay-tunnel');
+const { startBeacon, startScanner } = require('../server/nearby');
+const { pairWithHost } = require('../server/pair-client');
+const { isPrivateIp } = require('../server/jam-server');
 const { sameSite } = require('../shared/site');
 const { setupVault } = require('./vault');
 
@@ -13,6 +16,13 @@ let mainWindow = null;
 let jamServer = null;
 let relayTunnel = null; // 인터넷용 중계 서버로 가는 터널
 let relayKey = null;
+let vaultApi = null;
+let beacon = null; // 근처 알림 (호스트일 때)
+let scanner = null; // 근처 Jam 찾기
+let nearbyVisible = true;
+let nearbyList = [];
+let pairing = null; // 진행 중인 근처 페어링
+const beaconId = crypto.randomBytes(12).toString('base64url');
 
 // Jam 탭의 webContents id → 다른 사이트 이동이 잠겨 있는지
 const lockedJamTabs = new Set();
@@ -151,17 +161,23 @@ ipcMain.handle('jam:host-start', async (_e, opts = {}) => {
     });
   }
   let relay = null;
-  const relayUrl = typeof opts.relayUrl === 'string' && /^wss?:\/\/[^\s/]+$/i.test(opts.relayUrl) ? opts.relayUrl : null;
-  if (relayUrl) {
-    if (relayTunnel) relayTunnel.close();
-    relayTunnel = null;
+  // 중계 서버 주소 목록: 위에서부터 시도해서 처음 열리는 곳을 쓴다 (예전 방식 relayUrl 하나도 받음)
+  const isWs = (u) => typeof u === 'string' && /^wss?:\/\/[^\s/]+$/i.test(u);
+  const urls = [...(Array.isArray(opts.relayUrls) ? opts.relayUrls : []), opts.relayUrl].filter(isWs).slice(0, 8);
+  if (relayTunnel) relayTunnel.close();
+  relayTunnel = null;
+  const errors = [];
+  for (const relayUrl of urls) {
     try {
       relayTunnel = await startRelayTunnel({ relayUrl, localPort: jamServer.port, relayKey, log: (m) => console.log(`[relay] ${m}`) });
-      relay = { url: relayUrl, route: relayTunnel.route };
+      relay = { url: relayUrl, route: relayTunnel.route, skipped: errors };
+      break;
     } catch (err) {
-      relay = { error: err.message };
+      errors.push({ url: relayUrl, error: err.message });
     }
   }
+  if (!relay && errors.length) relay = { error: errors.map((e) => e.error).join(' / '), skipped: errors };
+  updateBeacon();
   return { port: jamServer.port, addresses: lanAddresses(), relay };
 });
 
@@ -170,11 +186,122 @@ ipcMain.handle('jam:host-stop', async () => {
     relayTunnel.close();
     relayTunnel = null;
   }
+  if (beacon) {
+    beacon.close();
+    beacon = null;
+  }
   if (jamServer) {
     const s = jamServer;
     jamServer = null;
     await s.close();
   }
+});
+
+// ---------- 중계 서버 상태 확인 ----------
+// ws://주소:포트 → http://주소:포트/version 을 짧게 확인 (앱 화면은 http 요청을 못 하므로 여기서)
+function probeRelay(wsUrl, timeoutMs = 1500) {
+  return new Promise((resolve) => {
+    let u;
+    try {
+      u = new URL(wsUrl.replace(/^ws/i, 'http'));
+    } catch {
+      return resolve({ url: wsUrl, ok: false, error: 'bad-url' });
+    }
+    const mod = u.protocol === 'https:' ? require('https') : require('http');
+    const started = Date.now();
+    const req = mod.get({ hostname: u.hostname, port: u.port || undefined, path: '/version', timeout: timeoutMs }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (d) => (body += d.slice(0, 64)));
+      res.on('end', () => {
+        const version = body.trim().slice(0, 32);
+        const ok = res.statusCode === 200 && /^\d+\.\d+\.\d+/.test(version);
+        resolve({ url: wsUrl, ok, version: ok ? version : null, ms: Date.now() - started, error: ok ? null : `HTTP ${res.statusCode}` });
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', (e) => resolve({ url: wsUrl, ok: false, error: e.message === 'timeout' ? 'timeout' : e.code || e.message }));
+  });
+}
+const fromApp = (e) => mainWindow && e.sender === mainWindow.webContents;
+ipcMain.handle('relay:probe', async (e, urls) => {
+  if (!fromApp(e) || !Array.isArray(urls)) return [];
+  return Promise.all(urls.filter((u) => typeof u === 'string' && /^wss?:\/\/[^\s/]+$/i.test(u)).slice(0, 8).map((u) => probeRelay(u)));
+});
+
+// ---------- 근처 찾기 (UDP 3032, 같은 네트워크) ----------
+function updateBeacon() {
+  // 호스트 서버가 켜져 있는 동안 (방이 생기면 그때부터 알림에 실림)
+  const hosting = !!jamServer;
+  if (!hosting || !nearbyVisible) {
+    if (beacon) beacon.close();
+    beacon = null;
+    return;
+  }
+  if (beacon) return;
+  beacon = startBeacon({
+    id: beaconId,
+    port: jamServer.port,
+    appVersion: app.getVersion(),
+    log: (m) => console.log(`[nearby] ${m}`),
+    getRooms: () => {
+      if (!jamServer || !nearbyVisible) return [];
+      return [...jamServer.rooms.values()].map((r) => ({
+        code: r.code,
+        name: r.members.get(r.hostId)?.name || '호스트',
+        access: r.settings.access,
+        n: r.members.size,
+      }));
+    },
+  });
+}
+function startNearbyScanner() {
+  if (scanner) return;
+  scanner = startScanner({
+    log: (m) => console.log(`[nearby] ${m}`),
+    onChange: (list) => {
+      nearbyList = list.filter((x) => x.id !== beaconId); // 내가 연 Jam 은 빼고
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('nearby', nearbyList);
+    },
+  });
+}
+ipcMain.handle('nearby:list', (e) => (fromApp(e) ? nearbyList : []));
+ipcMain.handle('nearby:visible', (e, on) => {
+  if (!fromApp(e)) return;
+  nearbyVisible = !!on;
+  updateBeacon();
+  return nearbyVisible;
+});
+// 링크 없이 근처 Jam 에 페어링: 확인 코드(6자리)는 앱 화면에 보내고, 끝나면 { secret, ticket } 을 돌려준다
+ipcMain.handle('nearby:pair', async (e, opts = {}) => {
+  if (!fromApp(e)) throw new Error('forbidden');
+  const ip = String(opts.ip || '');
+  const port = Number(opts.port);
+  const code = String(opts.code || '').toUpperCase();
+  if (!isPrivateIp(ip) || !/^[\d.:a-f]+$/i.test(ip) || !Number.isInteger(port) || port < 1 || port > 65535 || !/^[A-Z0-9]{4,8}$/.test(code)) {
+    throw new Error('근처 Jam 정보가 올바르지 않아요');
+  }
+  if (pairing) pairing.cancel();
+  const host = ip.includes(':') ? `[${ip}]` : ip;
+  pairing = pairWithHost({
+    url: `ws://${host}:${port}`,
+    code,
+    name: String(opts.name || '').slice(0, 24),
+    signer: async (th) => (vaultApi ? vaultApi.signPair(th) : null),
+    onSas: (sas) => e.sender.send('nearby:pair-sas', sas),
+    onPending: () => e.sender.send('nearby:pair-pending'),
+  });
+  const mine = pairing;
+  try {
+    return await mine.promise;
+  } catch (err) {
+    return { error: err.message, code: err.code };
+  } finally {
+    if (pairing === mine) pairing = null;
+  }
+});
+ipcMain.handle('nearby:pair-cancel', (e) => {
+  if (fromApp(e) && pairing) pairing.cancel();
 });
 
 // (최신 Electron 에서는 클립보드 함수가 Promise 를 돌려줄 수 있어 await 로 통일)
@@ -433,8 +560,9 @@ app.whenReady().then(() => {
   });
   setupDownloads(ses);
   // 브라우저 계정 · 비밀번호 뱅크 · 친구 (모두 이 PC 안에서만, 메인 프로세스가 키를 들고 있음)
-  setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow });
+  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow });
   createWindow();
+  startNearbyScanner();
   setupAutoUpdate();
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -443,6 +571,9 @@ app.whenReady().then(() => {
 
 app.on('window-all-closed', async () => {
   if (relayTunnel) relayTunnel.close();
+  if (beacon) beacon.close();
+  if (scanner) scanner.close();
+  if (pairing) pairing.cancel();
   if (jamServer) await jamServer.close();
   app.quit();
 });

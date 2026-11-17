@@ -4,6 +4,15 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('jamApp', {
   startHost: (opts) => ipcRenderer.invoke('jam:host-start', opts || {}),
+  // 중계 서버 목록 상태 · 근처 찾기 · 근처 페어링
+  probeRelays: (urls) => ipcRenderer.invoke('relay:probe', urls),
+  nearbyList: () => ipcRenderer.invoke('nearby:list'),
+  onNearby: (cb) => ipcRenderer.on('nearby', (_e, list) => cb(list)),
+  setNearbyVisible: (on) => ipcRenderer.invoke('nearby:visible', !!on),
+  pairNearby: (opts) => ipcRenderer.invoke('nearby:pair', opts),
+  cancelPair: () => ipcRenderer.invoke('nearby:pair-cancel'),
+  onPairSas: (cb) => ipcRenderer.on('nearby:pair-sas', (_e, sas) => cb(sas)),
+  onPairPending: (cb) => ipcRenderer.on('nearby:pair-pending', () => cb()),
   stopHost: () => ipcRenderer.invoke('jam:host-stop'),
   copy: (text) => ipcRenderer.invoke('clipboard:write', text),
   onOpenTab: (cb) => ipcRenderer.on('open-tab', (_e, url) => cb(url)),

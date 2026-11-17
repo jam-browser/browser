@@ -84,4 +84,22 @@ function parseFriendCode(text) {
   return { pub: m[1], name, fp: fingerprint(m[1]) };
 }
 
-module.exports = { newIdentity, fingerprint, signJoin, verifyJoin, friendCode, parseFriendCode, publicKeyFrom };
+// 근처 페어링: 이 연결의 기록(th, SHA-256 hex)에만 서명 (shared/pairing.js)
+const pairMessage = (th) => Buffer.from(`jam-pair|${th}`);
+function signPair(privB64, th) {
+  if (!/^[0-9a-f]{64}$/.test(String(th))) throw new Error('bad transcript');
+  const key = crypto.createPrivateKey({ key: Buffer.from(privB64, 'base64'), format: 'der', type: 'pkcs8' });
+  return b64u(crypto.sign(null, pairMessage(th), key));
+}
+function verifyPair(pub, sig, th) {
+  const key = publicKeyFrom(pub);
+  const s = unb64u(sig);
+  if (!key || s.length !== 64 || !/^[0-9a-f]{64}$/.test(String(th))) return false;
+  try {
+    return crypto.verify(null, pairMessage(th), key, s);
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { newIdentity, fingerprint, signJoin, verifyJoin, signPair, verifyPair, friendCode, parseFriendCode, publicKeyFrom };
