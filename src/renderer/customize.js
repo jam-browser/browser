@@ -795,10 +795,10 @@ function setupSettings() {
     writers.forEach((w) => w());
   });
   $('#settings-close').addEventListener('click', () => $('#settings-dialog').close());
-  document.querySelectorAll('.set-nav button').forEach((b) =>
+  document.querySelectorAll('#settings-dialog .set-nav button').forEach((b) =>
     b.addEventListener('click', () => {
-      document.querySelectorAll('.set-nav button').forEach((x) => x.classList.toggle('on', x === b));
-      document.querySelectorAll('.set-page').forEach((p) => (p.hidden = p.id !== b.dataset.page));
+      document.querySelectorAll('#settings-dialog .set-nav button').forEach((x) => x.classList.toggle('on', x === b));
+      document.querySelectorAll('#settings-dialog .set-page').forEach((p) => (p.hidden = p.id !== b.dataset.page));
     })
   );
 }

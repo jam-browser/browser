@@ -1,7 +1,7 @@
 {
   "name": "jam-browser",
   "productName": "Jam Browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "친구와 같은 페이지를 함께 보는 Jam 기능이 있는 데스크톱 브라우저",
   "author": "jam-browser",
   "homepage": "https://github.com/jam-browser/browser",
@@ -10,7 +10,7 @@
   "scripts": {
     "postinstall": "node scripts/build-toolbar-preload.js",
     "start": "electron .",
-    "test": "node test/sync-test.js && node test/relay-test.js",
+    "test": "node test/sync-test.js && node test/relay-test.js && node test/vault-test.js && node test/access-test.js && node test/nearby-test.js && node test/mirror-test.js",
     "icon": "electron scripts/make-icon.js",
     "dist": "electron-builder --win --publish never",
     "release": "electron-builder --win --publish always"

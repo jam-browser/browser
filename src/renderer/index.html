@@ -47,6 +47,7 @@
           <div id="downloads-empty" class="muted small">아직 받은 파일이 없어요</div>
         </div>
       </div>
+      <button id="account-btn" class="icon-btn" title="브라우저 계정 · 비밀번호 뱅크 (Ctrl+Shift+P)">👤</button>
       <button id="menu-btn" class="icon-btn" title="메뉴 · 설정">☰</button>
     </nav>
 
@@ -92,6 +93,22 @@
         </div>
         <div id="reaction-layer"></div>
         <div id="minimap" hidden title="페이지 전체에서 각자 보고 있는 영역"></div>
+        <!-- 화면 미러링: 참여자 화면 (호스트 탭의 영상) -->
+        <div id="mirror-view" hidden>
+          <div class="mirror-bar">
+            <span id="mirror-title"></span>
+            <span id="mirror-level" class="muted small"></span>
+            <span id="mirror-q" class="muted small" title="받는 화면 크기 · 초당 장수"></span>
+            <div class="spacer"></div>
+            <button id="mirror-req" class="text-btn small" title="호스트에게 마우스 · 키 조작을 요청" hidden>✋ 조작 요청</button>
+            <button id="mirror-hide" class="text-btn small" title="미러 화면 내리고 내 탭 보기 (오버레이의 🖥 로 다시 열기)">내 탭 보기</button>
+          </div>
+          <canvas id="mirror-canvas" tabindex="0"></canvas>
+          <div id="mirror-wait" class="muted">호스트 화면을 받는 중…</div>
+          <div id="mirror-pause" hidden></div>
+        </div>
+        <!-- 화면 미러링: 호스트 쪽 "누가 조작 중" 표시 -->
+        <div id="mirror-ctrl" hidden></div>
         <!-- 다른 사람 화면을 따라가는 중일 때 테두리 -->
         <div id="follow-frame" hidden><span id="follow-label"></span></div>
         <!-- 호스트: 참여 요청 -->
@@ -100,6 +117,7 @@
         <div id="jam-overlay" hidden>
           <span class="ov-badge" title="진행 중인 Jam">JAM</span>
           <div id="ov-people"></div>
+          <button id="ov-mirror" class="ov-btn" title="호스트 화면(미러링) 다시 보기" hidden>🖥</button>
           <button id="ov-panel" class="ov-btn" title="Jam 패널 열기/닫기 (Ctrl+J)">💬<span id="ov-unread" class="badge" hidden></span></button>
         </div>
       </section>
@@ -120,6 +138,16 @@
             <input id="name" type="text" maxlength="24" placeholder="예: 현석" />
           </label>
 
+          <label class="field">
+            <span>누가 들어올 수 있나요?</span>
+            <select id="access-mode">
+              <option value="approval">링크를 가진 사람 모두 (내가 수락해야 입장)</option>
+              <option value="friends">링크를 가진 친구만 (바로 입장)</option>
+              <option value="open">링크만 있으면 자유 입장</option>
+            </select>
+          </label>
+          <p id="access-hint" class="muted small"></p>
+
           <button id="start-jam" class="primary-btn">Jam 시작하기</button>
 
           <div class="divider"><span>또는 친구의 Jam에 참여</span></div>
@@ -130,12 +158,21 @@
           </label>
           <button id="join-jam" class="secondary-btn">참여하기</button>
 
-          <details class="advanced">
+          <div class="section nearby">
+            <div class="section-title">근처 Jam <span class="muted small">같은 네트워크 · 서버 없이</span></div>
+            <ul id="nearby-list"></ul>
+            <div id="nearby-empty" class="muted small">찾는 중… 같은 와이파이에서 누가 Jam 을 열면 여기에 나와요. 초대 링크 없이도 확인 코드로 들어갈 수 있어요.</div>
+          </div>
+
+          <details class="advanced" id="relay-details">
             <summary>인터넷으로 함께하기 (중계 서버)</summary>
             <p>기본은 중앙 서버 없이 <b>내 PC(호스트)에 친구가 직접 접속</b>하는 방식이에요(같은 와이파이/네트워크).
               멀리 있는 친구와 하려면 중계 서버 주소를 넣으세요. 중계 서버는 길만 이어 주고,
               대화는 초대 코드의 비밀키로 암호화되어 있어서 중계 서버도 내용을 볼 수 없어요.</p>
-            <input id="server-url" type="text" spellcheck="false" placeholder="relay.example.com:3031 (비우면 같은 네트워크 전용)" />
+            <p class="muted small">한 줄에 하나씩 여러 개 넣을 수 있어요. <b>위에서부터</b> 연결되는 첫 주소를 써요 (예: 집 안 주소 → 외부 IP → DDNS 이름).</p>
+            <textarea id="server-url" rows="3" spellcheck="false" placeholder="192.168.0.10:3031&#10;relay.example.com:3031&#10;(비우면 같은 네트워크 전용)"></textarea>
+            <div class="btn-row"><button id="relay-recheck" type="button" class="text-btn small">다시 확인</button></div>
+            <ul id="relay-status"></ul>
           </details>
         </div>
 
@@ -167,8 +204,22 @@
             <label class="toggle"><input id="follow" type="checkbox" checked /><span>페이지 따라가기 (동영상 재생 위치 포함)</span></label>
             <label class="toggle"><input id="follow-scroll" type="checkbox" /><span>스크롤도 따라가기</span></label>
             <label class="toggle" id="allow-all-row"><input id="allow-all" type="checkbox" /><span>모든 참여자에게 다른 사이트 이동 허용</span></label>
-            <label class="toggle" id="approval-row"><input id="require-approval" type="checkbox" checked /><span>참여할 때 호스트 승인 받기</span></label>
+            <label class="toggle" id="nearby-row"><input id="nearby-visible" type="checkbox" checked /><span>근처(같은 네트워크)에 이 Jam 보이기</span></label>
+            <label class="access-row" id="approval-row"><span>입장 방식</span>
+              <select id="access-live">
+                <option value="approval">링크 + 내 수락</option>
+                <option value="friends">링크를 가진 친구만</option>
+                <option value="open">링크만 있으면 자유 입장</option>
+              </select>
+            </label>
             <div id="my-perm" class="muted small"></div>
+          </div>
+
+          <div class="section mirror-section" id="mirror-section" hidden>
+            <div class="section-title">화면 미러링 <span class="muted small">호스트 · 소리 없음</span></div>
+            <button id="mirror-toggle" class="secondary-btn">🖥 지금 탭 화면 미러링</button>
+            <p id="mirror-hint" class="muted small"></p>
+            <p id="mirror-stat" class="muted small" hidden></p>
           </div>
 
           <div class="section now">
@@ -348,6 +399,8 @@
             <tr><td>Ctrl+ + / Ctrl+ - / Ctrl+0</td><td>확대 / 축소 / 원래대로 (사이트별 기억)</td></tr>
             <tr><td>Ctrl+J</td><td>Jam 패널 보이기/숨기기</td></tr>
             <tr><td>Ctrl+,</td><td>설정</td></tr>
+            <tr><td>Ctrl+Shift+P</td><td>비밀번호 뱅크 · 친구 · 계정</td></tr>
+            <tr><td>Ctrl+Shift+L</td><td>브라우저 계정 잠그기</td></tr>
             <tr><td>F5 / Alt+← / Alt+→</td><td>새로고침 / 뒤로 / 앞으로</td></tr>
             <tr><td>F11</td><td>전체 화면</td></tr>
             <tr><td>F12</td><td>개발자 도구</td></tr>
@@ -359,11 +412,184 @@
     </div>
   </dialog>
 
+  <!-- 브라우저 계정: 처음 화면 · 만들기 · 비밀 키 · 잠금 해제 -->
+  <div id="lock-screen" hidden>
+    <div class="ls-card">
+      <div class="ls-logo">JAM</div>
+
+      <section id="ls-welcome" class="ls-step" hidden>
+        <h2>브라우저 계정</h2>
+        <p>계정을 만들면 브라우저를 열 때 비밀번호로 잠금을 풀어야 하고, 사이트 비밀번호를 <b>이중 암호화</b>해서 보관해요.
+          친구 코드를 주고받으면 <b>"친구만 들어오는 Jam"</b>도 열 수 있어요.</p>
+        <p class="muted small">계정은 이 PC 에만 있어요. 서버로 보내지 않고, 개발자도 볼 수 없어요.</p>
+        <div class="ls-actions">
+          <button id="ls-go-create" class="primary-btn">계정 만들기</button>
+          <button id="ls-go-import" class="secondary-btn">백업 파일 불러오기</button>
+          <button id="ls-skip" class="text-btn">계정 없이 시작</button>
+        </div>
+      </section>
+
+      <form id="ls-create" class="ls-step" hidden autocomplete="off">
+        <h2>계정 만들기</h2>
+        <label class="field"><span>이름 (Jam 에서 보이는 이름)</span><input id="ls-name" type="text" maxlength="24" /></label>
+        <label class="field"><span>계정 비밀번호 (10자 이상)</span><input id="ls-pw" type="password" maxlength="200" /></label>
+        <div class="pw-meter"><span id="ls-meter-bar"></span></div>
+        <div id="ls-meter-text" class="muted small"></div>
+        <label class="field"><span>비밀번호 확인</span><input id="ls-pw2" type="password" maxlength="200" /></label>
+        <p class="muted small">⚠️ 이 비밀번호는 <b>되찾을 수 없어요.</b> 잊으면 저장한 비밀번호를 열 수 없어요(서버에 사본이 없기 때문이에요).</p>
+        <div id="ls-create-msg" class="ls-msg"></div>
+        <div class="ls-actions">
+          <button id="ls-create-btn" type="submit" class="primary-btn">만들기</button>
+          <button type="button" class="text-btn ls-back">뒤로</button>
+        </div>
+      </form>
+
+      <section id="ls-secret" class="ls-step" hidden>
+        <h2>🔑 비밀 키를 적어 두세요</h2>
+        <p>비밀번호와 함께 이 <b>비밀 키</b>가 있어야 계정을 열 수 있어요. 이 PC 에는 Windows 계정으로 암호화해 저장해 두었지만,
+          <b>다른 PC 에서 백업을 열거나 Windows 를 다시 설치하면</b> 이 키가 필요해요.</p>
+        <div class="secret-box"><code id="ls-secret-text"></code><button id="ls-secret-copy" class="text-btn small">복사</button></div>
+        <p class="muted small">종이에 적거나 비밀번호 관리자에 보관하세요. 비밀 키는 다시 보여 줄 수 없어요.</p>
+        <label class="toggle"><input id="ls-secret-ok" type="checkbox" /><span>안전한 곳에 적어 두었어요</span></label>
+        <div class="ls-actions"><button id="ls-secret-done" class="primary-btn" disabled>시작하기</button></div>
+      </section>
+
+      <form id="ls-unlock" class="ls-step" hidden autocomplete="off">
+        <h2 id="ls-unlock-title">잠금 해제</h2>
+        <p id="ls-unlock-reason" class="muted small"></p>
+        <label class="field"><span>계정 비밀번호</span><input id="ls-unlock-pw" type="password" maxlength="200" /></label>
+        <label id="ls-sk-row" class="field" hidden><span>비밀 키 (JK1-…) · 이 PC 에 저장되어 있지 않아요</span><input id="ls-unlock-sk" type="text" spellcheck="false" placeholder="JK1-XXXX-XXXX-…" /></label>
+        <div id="ls-unlock-msg" class="ls-msg"></div>
+        <div class="ls-actions">
+          <button id="ls-unlock-btn" type="submit" class="primary-btn">잠금 해제</button>
+          <button id="ls-forgot" type="button" class="text-btn">비밀번호를 잊었어요</button>
+        </div>
+        <div id="ls-forgot-box" class="danger-box" hidden>
+          <b>비밀번호는 되찾을 수 없어요.</b>
+          <p>암호를 풀 수 있는 사본이 어디에도 없기 때문이에요(그래서 안전해요). 계정을 지우고 새로 만들 수 있지만, 저장한 비밀번호·친구 목록과 웹사이트 로그인 상태가 모두 지워져요.</p>
+          <button id="ls-delete" type="button" class="secondary-btn danger-btn">계정 삭제하고 처음부터</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 비밀번호 뱅크 · 친구 · 계정 (Ctrl+Shift+P) -->
+  <dialog id="vault-dialog" class="sheet wide">
+    <div class="sheet-head">
+      <h3>🔐 <span id="vault-title">내 계정</span></h3>
+      <div class="spacer"></div>
+      <button id="vault-lock" class="text-btn small" title="지금 잠그기 (Ctrl+Shift+L)">🔒 잠그기</button>
+      <button id="vault-close" class="icon-btn">✕</button>
+    </div>
+    <div class="set-body">
+      <nav class="set-nav" id="vault-nav">
+        <button data-page="vault-logins" class="on">비밀번호</button>
+        <button data-page="vault-friends">친구</button>
+        <button data-page="vault-account">계정 · 보안</button>
+      </nav>
+      <div class="set-pages">
+        <section id="vault-logins" class="set-page">
+          <div class="btn-row grow">
+            <input id="login-q" type="text" placeholder="사이트 · 아이디 검색" spellcheck="false" />
+            <button id="login-add" class="mini-btn">＋ 추가</button>
+          </div>
+          <form id="login-form" class="login-form" hidden autocomplete="off">
+            <input id="lf-id" type="hidden" />
+            <label class="field"><span>사이트 주소</span><input id="lf-origin" type="text" spellcheck="false" placeholder="https://example.com" /></label>
+            <label class="field"><span>아이디</span><input id="lf-user" type="text" spellcheck="false" /></label>
+            <label class="field"><span>비밀번호 <span id="lf-pw-note" class="muted small"></span></span>
+              <div class="btn-row grow"><input id="lf-pw" type="password" maxlength="1000" /><button id="lf-gen" type="button" class="mini-btn" title="강한 비밀번호 만들기">🎲 생성</button><button id="lf-show" type="button" class="mini-btn">보기</button></div>
+            </label>
+            <div class="btn-row"><button type="submit" class="primary-btn small-btn">저장</button><button id="lf-cancel" type="button" class="text-btn">취소</button></div>
+          </form>
+          <ul id="login-list" class="set-list"></ul>
+          <div id="login-empty" class="muted small">저장한 비밀번호가 없어요. 사이트에서 로그인하면 저장할지 물어봐요.</div>
+          <p class="muted small">🔑 로그인 칸 옆의 열쇠를 눌러야 채워져요(내가 직접 누를 때만). 주소가 정확히 같은 사이트에만 채워서 가짜 사이트에는 넘어가지 않아요. 복사한 비밀번호는 20초 뒤 클립보드에서 지워져요.</p>
+        </section>
+
+        <section id="vault-friends" class="set-page" hidden>
+          <div class="about-box">
+            <b>내 친구 코드</b>
+            <div class="secret-box"><code id="my-friend-code"></code><button id="copy-friend-code" class="text-btn small">복사</button></div>
+            <div class="muted small">신원 지문: <code id="my-fp"></code></div>
+            <p class="muted small">친구 코드는 <b>공개 키</b>라서 남이 봐도 괜찮아요. 서로 친구 코드를 주고받으면, "친구만" Jam 에서 서명으로 본인 확인 후 바로 들어와요.
+              이름만 같은 사칭은 통하지 않아요. 더 확실하게 하려면 친구와 지문 앞 몇 글자를 말로 확인하세요.</p>
+          </div>
+          <form id="friend-form" class="btn-row grow" autocomplete="off">
+            <input id="friend-code" type="text" spellcheck="false" placeholder="친구 코드 붙여넣기 (jamfriend:…)" />
+            <input id="friend-name" type="text" maxlength="24" placeholder="이름 (선택)" />
+            <button type="submit" class="mini-btn">친구 추가</button>
+          </form>
+          <ul id="friend-list" class="set-list"></ul>
+          <div id="friend-empty" class="muted small">아직 친구가 없어요.</div>
+        </section>
+
+        <section id="vault-account" class="set-page" hidden>
+          <div class="set-row"><span>이름</span><b id="acc-name"></b></div>
+          <div class="set-row"><span>자동 잠금 (사용하지 않을 때)</span>
+            <div class="btn-row"><input id="acc-autolock" type="number" min="1" max="240" />분<button id="acc-autolock-save" class="mini-btn">저장</button></div>
+          </div>
+          <p class="muted small">Windows 화면을 잠그거나 절전 모드로 들어가도 바로 잠겨요.</p>
+          <form id="acc-pw-form" class="about-box" autocomplete="off">
+            <b>계정 비밀번호 바꾸기</b>
+            <input id="acc-pw-old" type="password" placeholder="지금 비밀번호" maxlength="200" />
+            <input id="acc-pw-new" type="password" placeholder="새 비밀번호 (10자 이상)" maxlength="200" />
+            <input id="acc-pw-new2" type="password" placeholder="새 비밀번호 확인" maxlength="200" />
+            <button type="submit" class="secondary-btn small-btn">바꾸기</button>
+          </form>
+          <div class="btn-row">
+            <button id="acc-export" class="secondary-btn small-btn">백업 파일로 내보내기</button>
+            <button id="acc-delete" class="secondary-btn small-btn danger-btn">계정 삭제</button>
+          </div>
+          <div class="about-box">
+            <b>어떻게 보호되나요?</b>
+            <ul>
+              <li>계정 비밀번호 + 계정마다 다른 무작위 <b>솔트</b> + 이 PC 의 <b>비밀 키</b>로 scrypt(일부러 느린 해시)를 돌려 열쇠를 만들어요. 비밀번호 자체는 어디에도 저장하지 않아요.</li>
+              <li>그 열쇠로 데이터 열쇠를 풀고, 데이터는 <b>AES-256-GCM 과 ChaCha20(+HMAC-SHA256) 두 가지 서로 다른 암호로 이중 암호화</b>해요. 사이트 비밀번호 하나하나도 따로 한 번 더 이중 암호화돼요.</li>
+              <li>그 위에 Windows 계정 암호화(DPAPI)를 한 겹 더 씌워 다른 Windows 사용자나 복사된 파일로는 열 수 없어요.</li>
+              <li>비밀번호를 여러 번 틀리면 다음 시도까지 기다려야 해요. 비밀번호 "보기"는 계정 비밀번호를 다시 물어봐요.</li>
+              <li>Jam 서버(내 PC · 중계 서버)는 길만 이어 줘요. 저장한 비밀번호·친구 목록은 이 PC 밖으로 나가지 않아요. 친구 확인은 서명만 보내요.</li>
+            </ul>
+          </div>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- 근처 Jam 페어링 (초대 링크 없이) -->
+  <dialog id="pair-dialog">
+    <h3>📡 근처 Jam 에 들어가기</h3>
+    <p class="muted" id="pair-host"></p>
+    <div class="pair-sas-box">
+      <div class="muted small">확인 코드</div>
+      <div id="pair-sas">··· ···</div>
+    </div>
+    <p id="pair-status" class="small"></p>
+    <p class="muted small">호스트 화면의 참여 요청 카드에도 같은 6자리가 떠요. 다르면 누군가 중간에서 가로채는 중일 수 있으니 취소하세요.</p>
+    <div class="modal-actions"><button id="pair-cancel" class="secondary-btn">취소</button></div>
+  </dialog>
+
+  <!-- 계정 비밀번호 다시 묻기 -->
+  <dialog id="pw-ask-dialog">
+    <form id="pw-ask-form" method="dialog" autocomplete="off">
+      <h3 id="pw-ask-title">계정 비밀번호 확인</h3>
+      <input id="pw-ask-input" type="password" maxlength="200" />
+      <div id="pw-ask-msg" class="ls-msg"></div>
+      <div class="modal-actions">
+        <button id="pw-ask-ok" type="submit" class="primary-btn">확인</button>
+        <button id="pw-ask-cancel" type="button" class="secondary-btn">취소</button>
+      </div>
+    </form>
+  </dialog>
+
   <div id="ctx-menu" hidden></div>
   <div id="toasts"></div>
   <script src="../../shared/site.js"></script>
   <script src="app.js"></script>
   <script src="safety.js"></script>
   <script src="customize.js"></script>
+  <script src="../../shared/mirror.js"></script>
+  <script src="mirror.js"></script>
+  <script src="account.js"></script>
 </body>
 </html>
