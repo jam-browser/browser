@@ -131,7 +131,15 @@
     if (SECRET_NAME.test(`${d.name || ''} ${d.id || ''} ${d.ph || ''} ${d.aria || ''}`)) return true;
     return !!d.formPw; // 로그인 폼 안의 칸 (아이디 등)
   }
-  const describeText = (d) => [d.text, d.aria, d.title, d.alt, d.name, d.id, d.href, d.action].filter((x) => typeof x === 'string' && x).join(' ');
+  // 글자 · 이름표 · 클래스 이름 · 아이콘(그림 파일 이름, SVG 제목) · data-* 를 모두 보고 판단 → 글자 없는 아이콘 버튼도 걸러짐
+  const describeText = (d) => [d.text, d.aria, d.title, d.alt, d.name, d.id, d.lab, d.cls, d.icon, d.data, d.href, d.action].filter((x) => typeof x === 'string' && x).join(' ');
+  // 아이콘 이름에 흔한 것 (톱니바퀴 = 설정, 아바타 = 내 계정 메뉴)
+  const ICON_WORDS = /\b(?:cog|cogs|gear|avatar|user[\s-]?(?:menu|circle|profile)|id[\s-]?card|credit)\b/i;
+  // 링크 · 폼 주소가 로그인 · 결제 등 민감한 주소인지 (shared/site.js 와 같은 규칙)
+  const SITE = typeof module === 'object' && module.exports ? require('./site') : root.JamSite;
+  const sensitiveTarget = (d) =>
+    [d.href, d.action].some((u) => typeof u === 'string' && /^https?:\/\//i.test(u) && SITE && SITE.isSensitiveUrl(u));
+  const sensitiveButton = (d) => isSensitiveText(describeText(d)) || ICON_WORDS.test(`${d.cls || ''} ${d.icon || ''} ${d.data || ''}`) || sensitiveTarget(d);
   const ACTIVATE_KEYS = new Set(['Enter', 'NumpadEnter', 'Space']);
 
   /** 원격 조작을 그 자리에 넣어도 되나 → { ok, reason } (reason: pw · frame · secret · login · button · unknown) */
@@ -142,12 +150,12 @@
     if (d.frame && SENSITIVE_FRAME.test(d.frame)) return no('frame');
     if (kind === 'keyDown' || kind === 'keyUp' || kind === 'char') {
       if (d.editable) return isSecretField(d) ? no('secret') : { ok: true };
-      if (d.act && (kind === 'char' || ACTIVATE_KEYS.has(code)) && (d.formPw || isSensitiveText(describeText(d)))) return no('button');
+      if (d.act && (kind === 'char' || ACTIVATE_KEYS.has(code)) && (d.formPw || sensitiveButton(d))) return no('button');
       return { ok: true };
     }
     if (d.editable && isSecretField(d)) return no('secret');
     if (d.act && d.formPw) return no('login');
-    if (d.act && isSensitiveText(describeText(d))) return no('button');
+    if (d.act && sensitiveButton(d)) return no('button');
     return { ok: true };
   }
   const BLOCK_REASON = {

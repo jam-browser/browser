@@ -129,6 +129,20 @@ function client(port) {
   assert.ok(V({ tag: 'button', act: true, text: 'Jump' }, 'keyDown', 'Space').ok);
   assert.ok(MIR.isSecretField({ pwMenu: true }));
   assert.ok(!MIR.isSecretField({ tag: 'textarea', editable: true, name: 'comment' }));
+  // 글자 없는 아이콘 버튼
+  const B = (d) => V({ tag: 'button', act: true, text: '', ...d }).reason;
+  assert.equal(B({ cls: 'btn Login' }), 'button', '클래스 이름');
+  assert.equal(B({ icon: 'icons settings' }), 'button', '그림 파일 이름');
+  assert.equal(B({ cls: 'fa fa cog' }), 'button', '톱니바퀴 아이콘');
+  assert.equal(B({ icon: 'My Account' }), 'button', 'SVG 제목');
+  assert.equal(B({ icon: 'avatar 32' }), 'button', '아바타');
+  assert.equal(B({ lab: '결제하기' }), 'button', 'aria-labelledby');
+  assert.equal(B({ data: 'logout btn' }), 'button', 'data-*');
+  assert.equal(B({ tag: 'a', href: 'https://shop.example/checkout?step=1' }), 'button', '민감한 링크 주소');
+  for (const d of [{ cls: 'player controls', icon: 'play' }, { cls: 'next level', icon: 'arrow right' }, { cls: 'level locked', icon: 'lock' }, { href: 'https://games.example/play/1' }]) {
+    assert.ok(V({ tag: 'button', act: true, ...d }).ok, JSON.stringify(d));
+  }
+  ok('글자 없는 아이콘 버튼도 클래스 이름 · 그림 파일 이름 · SVG 제목 · aria-labelledby · data-* · 링크 주소로 걸러냄 (게임 버튼은 통과)');
   ok('개인정보 · 결제 · 계정 버튼, 로그인 양식, 결제 iframe, 비밀번호 뱅크, 비밀 입력 칸은 원격 클릭 · 키를 막고 게임 버튼 · 일반 칸은 허용');
 
   // ---------- 서버 ----------

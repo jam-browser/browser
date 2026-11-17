@@ -795,7 +795,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           if (room.files.size >= FILE_MAX_COUNT || total > FILE_ROOM_MAX) {
             return send(ws, { type: 'error', code: 'file-limit', message: `공유 파일은 한 Jam 에 ${FILE_MAX_COUNT}개 · 합계 200MB 까지예요. 안 쓰는 파일을 지워 주세요.` });
           }
-          const meta = { fid, name: cleanText(msg.name, 120) || 'file', kind: msg.kind, size, sha: msg.sha, entry: cleanText(msg.entry, 300), count, by: me.id };
+          const meta = { fid, name: cleanText(msg.name, 120) || 'file', kind: msg.kind, size, sha: msg.sha, entry: cleanText(msg.entry, 300), count, by: me.id, net: msg.kind === 'html' && msg.net === true };
           const n = Math.ceil(size / FILE_PIECE);
           room.files.set(fid, { meta, n, chunks: new Array(n), got: 0, ready: false, data: null });
           broadcast(room, { type: 'file', file: publicFile(room.files.get(fid)) });

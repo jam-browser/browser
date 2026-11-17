@@ -99,7 +99,7 @@ const mirror = (() => {
       updatePrivacy(h);
       render();
     } catch (e) {
-      console.error(e);
+      console.error(`mirror #1: ${e && e.name}: ${e && e.message}`);
       toast(`화면 미러링을 시작하지 못했어요: ${e.message}`);
       stop();
     }
@@ -110,7 +110,7 @@ const mirror = (() => {
     try {
       reader = new MediaStreamTrackProcessor({ track: h.track }).readable.getReader();
     } catch (e) {
-      console.error(e);
+      console.error(`mirror #2: ${e && e.name}: ${e && e.message}`);
       return stop();
     }
     h.reader = reader;
@@ -136,7 +136,7 @@ const mirror = (() => {
         if (!h.needKey && frame.timestamp - h.lastEncTs < gap * 0.85) continue; // 초당 장수 맞추기
         encodeFrame(h, frame);
       } catch (e) {
-        console.error(e);
+        console.error(`mirror #3: ${e && e.name}: ${e && e.message}`);
       } finally {
         frame.close();
       }
@@ -156,7 +156,7 @@ const mirror = (() => {
     if (!h.encoder || h.encoder.state === 'closed' || w !== h.w || ht !== h.h || h.reconf) configure(h, w, ht);
     if (h.encoder.encodeQueueSize > 2) {
       h.needKey = true; // 인코더가 밀림 → 건너뜀
-      h.localDrops++;
+      if (performance.now() - (h.reconfAt || 0) > 1500) h.localDrops++; // 새 인코더가 준비되는 동안 밀린 건 네트워크 밀림이 아님
       return;
     }
     let input = frame;
@@ -183,11 +183,23 @@ const mirror = (() => {
     h.w = w;
     h.h = ht;
     h.reconf = false;
-    if (!h.encoder || h.encoder.state === 'closed') {
-      h.encoder = new VideoEncoder({
-        output: (chunk) => sendChunk(h, chunk),
+    h.reconfAt = performance.now();
+    // 크기 · 비트레이트 · 초당 장수가 바뀌면 인코더를 새로 만든다.
+    // (돌고 있는 하드웨어 H.264 인코더를 다시 configure 하면 "Encoding error" 가 나서 VP8 로 떨어지던 문제)
+    // 옛 인코더에서 늦게 나오는 조각은 버림 → 새 인코더의 키프레임부터 이어짐
+    const old = h.encoder;
+    if (old && old.state !== 'closed') {
+      h.encoder = null;
+      try { old.close(); } catch {}
+    }
+    {
+      const enc = new VideoEncoder({
+        output: (chunk) => {
+          if (h.encoder === enc) sendChunk(h, chunk);
+        },
         error: (e) => {
-          console.error(e);
+          if (h.encoder !== enc) return; // 이미 바꾼 옛 인코더
+          console.error(`mirror #4: ${e && e.name}: ${e && e.message}`);
           if (host !== h) return;
           if (h.codec.codec !== 'vp8') {
             // 하드웨어 인코더가 실패하면 VP8 로 다시
@@ -200,6 +212,7 @@ const mirror = (() => {
           stop();
         },
       });
+      h.encoder = enc;
     }
     const cfg = { codec: h.codec.codec, width: w, height: ht, bitrate: Math.round(h.q.rate), framerate: FPS[h.q.fpsI], latencyMode: 'realtime', bitrateMode: 'variable' };
     if (h.codec.avc) cfg.avc = h.codec.avc;
@@ -235,7 +248,7 @@ const mirror = (() => {
         encodeFrame(h, f);
         f.close();
       } catch (e) {
-        console.error(e);
+        console.error(`mirror #5: ${e && e.name}: ${e && e.message}`);
       }
     }, 250);
   }
@@ -258,7 +271,8 @@ const mirror = (() => {
       h.encoder = null;
       changed = true;
     }
-    const congested = st.drops > 0 || st.backlog > 1e6 || st.late > 600 || h.localDrops > 0;
+    const fresh = performance.now() - (h.reconfAt || 0) < 1500; // 인코더를 막 바꾼 직후의 지연(키프레임)은 무시
+    const congested = st.drops > 0 || st.backlog > 1e6 || (!fresh && st.late > 600) || h.localDrops > 0;
     h.localDrops = 0;
     if (!h.paused && st.viewers > 0) {
       if (congested) {
@@ -470,7 +484,7 @@ const mirror = (() => {
         if (v.frames === 1) $('#mirror-wait').hidden = true;
       },
       error: (e) => {
-        console.error(e);
+        console.error(`mirror #6: ${e && e.name}: ${e && e.message}`);
         if (view === v) {
           newDecoder();
           v.waitingKey = true;
@@ -541,7 +555,7 @@ const mirror = (() => {
         try {
           v.decoder.configure({ codec: p.c, codedWidth: p.w, codedHeight: p.h, optimizeForLatency: true });
         } catch (e) {
-          console.error(e);
+          console.error(`mirror #7: ${e && e.name}: ${e && e.message}`);
           v.bad = true; // 이 영상 형식을 못 풂 → 호스트가 VP8 로 바꿈
           return requestKey();
         }
@@ -568,7 +582,7 @@ const mirror = (() => {
       v.decoder.decode(new EncodedVideoChunk({ type: p.k ? 'key' : 'delta', timestamp: p.ts, data }));
       v.lastF = p.f;
     } catch (e) {
-      console.error(e);
+      console.error(`mirror #8: ${e && e.name}: ${e && e.message}`);
       v.waitingKey = true;
       requestKey();
     }
