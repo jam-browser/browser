@@ -228,6 +228,22 @@ async function main() {
   assert.equal((await host.next('viewport')).top, null);
   ok('보고 있는 영역 + 해상도 + 확대율 + 위치 앵커 공유 (너무 긴 앵커는 버림)');
 
+  // 글자 앵커 + 예비 앵커 (창 크기가 달라도 같은 내용을 찾기 위한 정보)
+  const textTop = {
+    p: '#title>h1', fx: 0.4, fy: 0.5, off: 76, t: 0, o: 12, ch: 'B', cx: 0.3, cy: 0.6,
+    alt: [{ p: '#owner>a', fx: 0.1, fy: 0.5, off: 100 }, { p: '#d', fx: 0, fy: 0, off: 124 }, { p: '#e', fx: 0, fy: 0, off: 1 }, { p: '#f', fx: 0, fy: 0, off: 1 }],
+  };
+  guest.send({ type: 'viewport', url: 'https://en.wikipedia.org/', top: textTop, bot: null, w: 900, h: 650 });
+  const tv = (await host.next('viewport')).top;
+  assert.deepEqual([tv.t, tv.o, tv.ch, tv.cx, tv.cy], [0, 12, 'B', 0.3, 0.6]);
+  assert.equal(tv.alt.length, 3);
+  assert.equal(tv.alt[0].p, '#owner>a');
+  guest.send({ type: 'cursor', url: 'https://en.wikipedia.org/', x: 0.1, y: 0.1, a: { p: '#x', fx: 2, fy: -1, t: -1, o: 3, alt: [{ p: '#y', alt: [{ p: '#z' }] }] } });
+  const ca = (await host.next('cursor')).a;
+  assert.deepEqual([ca.fx, ca.fy, ca.t, ca.o], [1, 0, undefined, undefined]);
+  assert.equal(ca.alt[0].alt, undefined);
+  ok('글자 앵커·예비 앵커 전달 (예비는 3개까지, 한 단계만, 잘못된 값은 버림)');
+
   guest.send({ type: 'viewport', url: null });
   assert.equal((await host.next('viewport')).url, null);
   guest.send({ type: 'cursor', x: null });

@@ -121,8 +121,10 @@ async function until(label, fn, ms = 15000) {
 
   // scroll following across different sizes (guest still at 1600×900)
   await A.ev(`jam.followScroll = true; document.querySelector('#follow-scroll').checked = true; 1`);
-  await GW.ev(`(() => { const h = document.querySelectorAll('#bodyContent h2, #bodyContent h3')[6]; window.scrollTo(0, h.getBoundingClientRect().top + scrollY - 80); return 1; })()`);
-  await sleep(2000);
+  // 실제 휠 입력으로 스크롤한다 (앱은 사람이 직접 한 스크롤만 다른 사람에게 보낸다. 스크립트 scrollTo 는 무시됨)
+  const delta = await GW.ev(`Math.round(document.querySelectorAll('#bodyContent h2, #bodyContent h3')[6].getBoundingClientRect().top - 80)`);
+  await GW.cmd('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 200, y: 200, deltaX: 0, deltaY: delta });
+  await sleep(2500);
   const gOff = await GW.ev(`document.querySelectorAll('#bodyContent h2, #bodyContent h3')[6].getBoundingClientRect().top`);
   const hOff = await HW.ev(`document.querySelectorAll('#bodyContent h2, #bodyContent h3')[6].getBoundingClientRect().top`);
   const scrollOk = Math.abs(gOff - hOff) < 60;

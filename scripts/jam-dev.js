@@ -110,7 +110,11 @@ async function freePorts(start, count) {
   const cdp = debug ? await freePorts(CDP_BASE, names.length) : [];
   names.forEach((name, i) => {
     const args = [ROOT, `--user-data-dir=${path.join(PROFILES, name)}`];
-    if (debug) args.push(`--remote-debugging-port=${cdp[i]}`);
+    if (debug) {
+      args.push(`--remote-debugging-port=${cdp[i]}`);
+      // 자동 조작 중에 창이 가려지거나 최소화돼도 계속 그리게 한다 (안 그러면 입력·크기 변경이 멈춘다)
+      args.push('--disable-features=CalculateNativeWinOcclusion', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows');
+    }
     // 같은 PC 에서 같은 영상이 두 번 겹쳐 들리지 않게 게스트는 소리를 끈다 (--guest-audio 로 켜기)
     if (name !== 'host' && !flag('--guest-audio')) args.push('--mute-audio');
     run(name, electron, args, { env: { ...process.env, JAM_DEV_INSTANCE: name } });
