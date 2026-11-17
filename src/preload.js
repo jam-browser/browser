@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('jamApp', {
   mirrorEnd: () => ipcRenderer.invoke('mirror:end'),
   // 같이 보는 파일
   filePick: () => ipcRenderer.invoke('file:pick'),
-  fileFromPath: (p, withFolder) => ipcRenderer.invoke('file:from-path', p, withFolder),
+  fileFromPath: (p, withFolder, net) => ipcRenderer.invoke('file:from-path', p, withFolder, net),
   fileFromWeb: (url) => ipcRenderer.invoke('file:from-web', url),
   fileBytes: (fid) => ipcRenderer.invoke('file:bytes', fid),
   fileStore: (meta, bytes) => ipcRenderer.invoke('file:store', meta, bytes),

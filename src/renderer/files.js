@@ -42,7 +42,7 @@ const jamFiles = (() => {
     const n = Math.ceil(meta.size / PIECE);
     const f = { ...meta, by: jam.you.id, ready: false, local: true, bytes: new Uint8Array(bytes), up: { sent: 0, n, rounds: 0 } };
     files.set(meta.fid, f);
-    jam.send({ type: 'file-offer', fid: meta.fid, name: meta.name, kind: meta.kind, size: meta.size, sha: meta.sha, entry: meta.entry, count: meta.count });
+    jam.send({ type: 'file-offer', fid: meta.fid, name: meta.name, kind: meta.kind, size: meta.size, sha: meta.sha, entry: meta.entry, count: meta.count, net: !!meta.net });
     render();
     await upload(f, [...Array(n).keys()]);
   }
@@ -122,7 +122,7 @@ const jamFiles = (() => {
       render();
       return toast('📎 받은 파일이 손상됐어요 (해시 불일치). 다시 받아 주세요');
     }
-    const r = await jamApp.fileStore({ fid: f.fid, name: f.name, kind: f.kind, size: f.size, sha: f.sha }, all);
+    const r = await jamApp.fileStore({ fid: f.fid, name: f.name, kind: f.kind, size: f.size, sha: f.sha, net: f.net === true }, all);
     if (!r || r.error) {
       render();
       return toast(`📎 ${r?.error || '파일을 열 수 없어요'}`);
@@ -148,7 +148,7 @@ const jamFiles = (() => {
     if (askedFor !== fid) {
       askedFor = fid;
       const by = f && jam.member(f.by);
-      const what = f ? `${KIND_ICON[f.kind] || '📎'} ${f.name} (${fmt(f.size)})` : '공유 파일';
+      const what = f ? `${KIND_ICON[f.kind] || '📎'} ${f.name} (${fmt(f.size)})${f.net ? ' · 🌐 인터넷 허용됨' : ''}` : '공유 파일';
       toast(`📎 ${by?.name || '호스트'}님이 ${what} 을(를) 열었어요`, [{ label: '받아서 열기', fn: () => download(fid, true) }]);
     }
     render();
@@ -170,7 +170,7 @@ const jamFiles = (() => {
             toast(`📎 공유 준비 완료: ${f.name}`, [{ label: 'Jam 탭에서 열기', fn: () => openInJam(f.fid) }]);
           } else if (!f.local) {
             const by = jam.member(f.by);
-            toast(`📎 ${by?.name || '호스트'}님이 파일을 공유했어요: ${KIND_ICON[f.kind] || ''} ${f.name} (${fmt(f.size)})`, [{ label: '받기', fn: () => download(f.fid) }]);
+            toast(`📎 ${by?.name || '호스트'}님이 파일을 공유했어요: ${KIND_ICON[f.kind] || ''} ${f.name} (${fmt(f.size)})${f.net ? ' · 🌐 이 HTML 은 인터넷에 접속할 수 있어요' : ''}`, [{ label: '받기', fn: () => download(f.fid) }]);
           }
           // 이미 Jam 이 이 파일을 열어 둔 상태였으면 다시 물어봄
           if (fidOf(jam.room?.current?.url) === f.fid && !f.local) {
@@ -239,7 +239,7 @@ const jamFiles = (() => {
       'div',
       { class: 'file-row', 'data-fid': f.fid },
       el('span', { class: 'file-icon' }, KIND_ICON[f.kind] || '📎'),
-      el('div', { class: 'file-main' }, el('div', { class: 'file-name', title: f.name }, f.name), el('div', { class: 'muted small' }, `${fmt(f.size)}${f.count > 1 ? ` · 파일 ${f.count}개` : ''} · ${status}`)),
+      el('div', { class: 'file-main' }, el('div', { class: 'file-name', title: f.name }, f.name), el('div', { class: 'muted small' }, `${fmt(f.size)}${f.count > 1 ? ` · 파일 ${f.count}개` : ''}${f.net ? ' · 🌐 인터넷 허용' : ''} · ${status}`)),
       el('div', { class: 'file-actions' }, actions)
     );
   }

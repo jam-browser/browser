@@ -4,8 +4,19 @@
 <meta charset="utf-8">
 <title>PDF</title>
 <!-- Jam Browser 공유 PDF 뷰어 (pdf.js, Apache-2.0). PDF 안의 스크립트는 실행하지 않아요 -->
-<link rel="stylesheet" href="/_jam/pdfjs/web/pdf_viewer.css">
 <style>
+  /* pdf.js 글자 층 (pdf_viewer.css 에서 필요한 부분만) — 투명 글자로 선택 · 찾기 */
+  .textLayer { position: absolute; text-align: initial; inset: 0; overflow: clip; opacity: 1; line-height: 1; text-size-adjust: none;
+    forced-color-adjust: none; transform-origin: 0 0; caret-color: CanvasText; z-index: 0;
+    --min-font-size: 1; --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size)); --min-font-size-inv: calc(1 / var(--min-font-size)); }
+  .textLayer :is(span, br) { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+  .textLayer > :not(.markedContent), .textLayer .markedContent span:not(.markedContent) { z-index: 1; --font-height: 0;
+    font-size: calc(var(--text-scale-factor) * var(--font-height)); --scale-x: 1; --rotate: 0deg;
+    transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv)); }
+  .textLayer .markedContent { display: contents; }
+  .textLayer ::selection { background: rgba(0, 90, 255, .3); }
+  .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: 0; cursor: default; user-select: none; }
+
   html, body { margin: 0; background: #3b3d40; font: 13px/1.4 "Segoe UI", "Malgun Gothic", sans-serif; }
   #bar { position: fixed; top: 0; left: 0; right: 0; height: 38px; z-index: 10; display: flex; align-items: center; gap: 8px; padding: 0 12px;
     background: #26282b; color: #eee; box-shadow: 0 1px 4px rgba(0,0,0,.4); }

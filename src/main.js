@@ -57,6 +57,13 @@ function lanAddresses() {
   return out.sort((a, b) => Number(isPrivate(b)) - Number(isPrivate(a)));
 }
 
+// 자동 테스트(화면 밖 창)에서는 메인 프로세스 오류를 오류 창 대신 로그로 → 테스트 실행기가 로그에서 찾아 실패로 처리
+// (오류 창이 떠 있으면 사람 화면을 가리고, 테스트는 알 수 없음)
+if (process.env.JAM_TEST_OFFSCREEN === '1') {
+  process.on('uncaughtException', (err) => console.error(`[JAM-MAIN-ERROR] ${err && err.stack ? err.stack : err}`));
+  process.on('unhandledRejection', (err) => console.error(`[JAM-MAIN-ERROR] (promise) ${err && err.stack ? err.stack : err}`));
+}
+
 function createWindow() {
   // 자동 테스트용: 창을 화면 밖에 띄우고 포커스를 뺏지 않는다 (작업 중인 화면을 가리지 않게)
   const offscreen = process.env.JAM_TEST_OFFSCREEN === '1';
@@ -87,7 +94,14 @@ function createWindow() {
   // 웹페이지 탭(webview)이 붙을 때마다 확장 프로그램(chrome.tabs 등)이 알 수 있게 등록
   const win = mainWindow;
   win.webContents.on('did-attach-webview', (_e, wc) => extensions?.addTab(wc, win));
-  if (offscreen) mainWindow.showInactive();
+  if (offscreen) {
+    mainWindow.showInactive();
+    // 자동 테스트: 앱 화면의 오류도 로그로 남겨 테스트가 알아채게
+    mainWindow.webContents.on('console-message', (e) => {
+      const level = e.level ?? e.params?.level;
+      if (level === 'error' || level === 3) console.error(`[JAM-RENDERER-ERROR] ${e.message ?? e.params?.message}`);
+    });
+  }
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.on('closed', () => (mainWindow = null));
   mainWindow.on('enter-full-screen', () => mainWindow.webContents.send('fullscreen', true));
@@ -262,7 +276,7 @@ ipcMain.handle('relay:probe', async (e, urls) => {
 ipcMain.handle('mirror:source-id', (e, wcId) => {
   if (!fromApp(e)) throw new Error('forbidden');
   const { webContents } = require('electron');
-  const wc = webContents.fromId(Number(wcId));
+  const wc = Number.isInteger(Number(wcId)) ? webContents.fromId(Number(wcId)) : null;
   if (!wc || wc.getType() !== 'webview' || wc.hostWebContents !== mainWindow.webContents) throw new Error('탭을 찾을 수 없어요');
   pendingCapture = { wcId: wc.id, until: Date.now() + 10000 }; // 이 탭에 대한 캡처 요청 한 번만 허락 (권한 처리기에서 확인)
   mirrorWcId = wc.id; // 원격 조작은 이 탭에만 들어간다
@@ -695,7 +709,7 @@ function createTabForExtension(details) {
     }, 10000);
     pendingExtTabs.set(reqId, (wcId) => {
       clearTimeout(timer);
-      const wc = webContents.fromId(wcId);
+      const wc = Number.isInteger(wcId) ? webContents.fromId(wcId) : null;
       if (wc) resolve([wc, win]);
       else reject(new Error('탭을 찾지 못했어요'));
     });
@@ -708,6 +722,8 @@ ipcMain.on('ext:tab-created', (_e, { reqId, wcId }) => {
   if (done) done(wcId);
 });
 ipcMain.on('ext:tab-activated', (_e, wcId) => {
+  // 아직 webview 가 안 붙은 탭이면 id 가 null → fromId 가 예외를 던져 오류 창이 뜨던 문제
+  if (!Number.isInteger(wcId)) return;
   const wc = webContents.fromId(wcId);
   if (wc && extensions) extensions.selectTab(wc);
 });

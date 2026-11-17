@@ -46,10 +46,23 @@ function startRelayTunnel({ relayUrl, localPort, relayKey, log = () => {} }) {
       conns.add(local);
       const toLocal = [];
       const toRemote = [];
+      // 받는 쪽이 밀리면(중계 서버가 속도를 줄이면) 보내는 쪽 읽기를 잠깐 멈춘다.
+      // → 호스트 Jam 서버가 그 참여자 연결의 밀림을 보고 화면 미러링 화질 · 파일 전송 속도를 낮춤 (메모리에 무한정 쌓이지 않음)
+      const HIGH = 2 * 1024 * 1024;
       const forward = (from, to, queue) =>
         from.on('message', (data, isBinary) => {
-          if (to.readyState === WebSocket.OPEN) to.send(data, { binary: isBinary });
-          else if (queue.length < MAX_QUEUE) queue.push([data, isBinary]);
+          if (to.readyState === WebSocket.OPEN) {
+            to.send(data, { binary: isBinary });
+            if (to.bufferedAmount > HIGH && !from.isPaused) {
+              from.pause();
+              const t = setInterval(() => {
+                if (to.readyState !== WebSocket.OPEN || from.readyState !== WebSocket.OPEN || to.bufferedAmount < HIGH / 2) {
+                  clearInterval(t);
+                  if (from.readyState === WebSocket.OPEN) from.resume();
+                }
+              }, 50);
+            }
+          } else if (queue.length < MAX_QUEUE) queue.push([data, isBinary]);
         });
       forward(remote, local, toLocal);
       forward(local, remote, toRemote);

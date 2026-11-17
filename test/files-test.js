@@ -164,6 +164,17 @@ function client(port) {
   assert.equal((await g.next('file-removed')).fid, 'badbadbadbad0000');
   ok('올린 내용의 SHA-256 이 안 맞으면 공유를 취소하고 모두의 목록에서 지움');
 
+  // 인터넷 허용 표시는 HTML 에만
+  host.send({ ...offer, fid: 'nethtml000000000', kind: 'html', net: true, size: 100, sha: sha(Buffer.alloc(100)) });
+  assert.equal((await g.next('file', (m) => m.file.fid === 'nethtml000000000')).file.net, true);
+  host.send({ ...offer, fid: 'netpdf0000000000', kind: 'pdf', net: true, size: 100, sha: sha(Buffer.alloc(100)) });
+  assert.equal((await g.next('file', (m) => m.file.fid === 'netpdf0000000000')).file.net, false);
+  host.send({ type: 'file-remove', fid: 'nethtml000000000' });
+  host.send({ type: 'file-remove', fid: 'netpdf0000000000' });
+  await g.next('file-removed');
+  await g.next('file-removed');
+  ok('"인터넷 허용" 표시는 HTML 공유에만 붙고 참여자에게 전달됨');
+
   // 새로 들어온 사람은 환영 정보로 파일 목록을 받음
   const late = client(server.port);
   await late.opened;

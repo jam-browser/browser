@@ -967,6 +967,30 @@ function describe(el) {
   }
   const img = t.querySelector ? t.querySelector('img[alt]') : null;
   const link = t.closest ? t.closest('a[href]') : null;
+  // 글자 없는 그림 · 아이콘 버튼도 알아보도록: 클래스 이름, 그림 파일 이름, SVG 제목, aria-labelledby, data-* 이름
+  const words = (s) => String(s || '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_./#:?=&]+/g, ' ');
+  const clsOf = (e) => (e ? (typeof e.className === 'string' ? e.className : (e.className && e.className.baseVal) || '') : '');
+  const fileOf = (u) => {
+    const m = /([^/?#]+?)(?:\.[a-z0-9]{2,5})?(?:[?#].*)?$/i.exec(String(u || ''));
+    return m ? m[1] : '';
+  };
+  const icons = [];
+  try {
+    for (const i of t.querySelectorAll ? [...t.querySelectorAll('img[src], svg title, svg use, i[class], span[class*="icon"]')].slice(0, 6) : []) {
+      if (i.tagName === 'IMG') icons.push(fileOf(i.getAttribute('src')));
+      else if (i.tagName.toLowerCase() === 'title') icons.push(i.textContent);
+      else if (i.tagName.toLowerCase() === 'use') icons.push(fileOf(i.getAttribute('href') || i.getAttribute('xlink:href')));
+      else icons.push(clsOf(i));
+    }
+    if (ttag === 'input' && String(t.type).toLowerCase() === 'image') icons.push(fileOf(t.getAttribute('src')));
+    const bg = getComputedStyle(t).backgroundImage;
+    if (bg && bg !== 'none') icons.push(fileOf(/url\(["']?([^"')]+)/.exec(bg)?.[1]));
+  } catch {}
+  let lab = '';
+  try {
+    for (const id of attr('aria-labelledby').split(/\s+/).filter(Boolean).slice(0, 3)) lab += ` ${document.getElementById(id)?.textContent || ''}`;
+  } catch {}
+  const data = ['data-testid', 'data-test', 'data-qa', 'data-action', 'data-track', 'data-name', 'data-id'].map(attr).join(' ');
   return {
     tag: ttag,
     type: cut(String(t.type || ''), 20).toLowerCase(),
@@ -983,6 +1007,10 @@ function describe(el) {
     href: cut(link ? link.href : '', 300),
     action: cut(form ? form.getAttribute('action') || '' : '', 200),
     formPw: inLogin,
+    cls: cut(words(`${clsOf(t)} ${clsOf(t.parentElement)}`), 200),
+    icon: cut(words(icons.join(' ')), 200),
+    lab: cut(lab.trim(), 120),
+    data: cut(words(data), 120),
   };
 }
 

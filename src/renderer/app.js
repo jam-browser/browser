@@ -275,7 +275,8 @@ function notifyExtActiveTab(tab) {
   const id = tabWcId(tab);
   if (id != null) return jamApp.extTabActivated(id);
   tab.webview.addEventListener('did-attach', () => {
-    if (tab === activeTab) jamApp.extTabActivated(tabWcId(tab));
+    const wcId = tabWcId(tab);
+    if (tab === activeTab && wcId != null) jamApp.extTabActivated(wcId);
   }, { once: true });
 }
 

@@ -119,8 +119,24 @@ const CSP = [
   "form-action 'none'",
   "base-uri 'self'",
 ].join('; ');
+// 호스트가 "인터넷 허용" 을 켜고 공유한 HTML: https 로만 바깥 요청 허용 (소리 · 동영상 · 플러그인 · 양식 보내기는 그대로 막음)
+const CSP_NET = [
+  "default-src 'self' jamfile: data: blob: https:",
+  "script-src 'self' jamfile: blob: https: 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'",
+  "style-src 'self' jamfile: https: 'unsafe-inline' data:",
+  "img-src 'self' jamfile: data: blob: https:",
+  "font-src 'self' jamfile: data: https:",
+  "connect-src 'self' jamfile: data: blob: https: wss:",
+  "media-src 'none'",
+  "worker-src 'self' jamfile: blob:",
+  "frame-src 'self' jamfile: data: blob: https:",
+  "object-src 'none'",
+  "form-action 'none'",
+  "base-uri 'self'",
+].join('; ');
 
 function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
+  const debugLog = process.env.JAM_TEST_OFFSCREEN ? (m) => console.log(m) : null;
   const store = new Map(); // fid → { fid, name, kind, size, sha, entry, entries, pack, at, count }
   const fromApp = (e) => {
     const w = getWindow();
@@ -134,7 +150,6 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
     'pdfjs/standard_fonts/': nm('pdfjs-dist', 'standard_fonts'),
     'pdfjs/wasm/': nm('pdfjs-dist', 'wasm'),
     'pdfjs/iccs/': nm('pdfjs-dist', 'iccs'),
-    'pdfjs/web/': nm('pdfjs-dist', 'web'),
     'ruffle/': nm('@ruffle-rs', 'ruffle'),
     '': path.join(appDir, 'src', 'viewer'),
   };
@@ -151,12 +166,13 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
     }
     return meta(rec);
   }
-  const meta = (r) => ({ fid: r.fid, name: r.name, kind: r.kind, size: r.size, sha: r.sha, entry: r.entry, count: r.count });
-  function record(fid, name, kind, buf) {
+  const meta = (r) => ({ fid: r.fid, name: r.name, kind: r.kind, size: r.size, sha: r.sha, entry: r.entry, count: r.count, net: r.net });
+  // net: 인터넷 허용 (HTML 만, 호스트가 공유할 때 켬)
+  function record(fid, name, kind, buf, net = false) {
     const { entry, entries } = unpack(buf);
-    return { fid, name: cleanName(name), kind, size: buf.length, sha: sha256(buf), entry, entries, pack: buf, at: Date.now(), count: entries.size };
+    return { fid, name: cleanName(name), kind, size: buf.length, sha: sha256(buf), entry, entries, pack: buf, at: Date.now(), count: entries.size, net: kind === 'html' && net === true };
   }
-  function fromFile(file, withFolder) {
+  function fromFile(file, withFolder, net = false) {
     const kind = KIND_OF[extOf(file)];
     if (!kind) throw new Error('공유할 수 없는 형식이에요 (PDF · HTML · 이미지 · 텍스트 · SWF 만)');
     const name = path.basename(file);
@@ -174,7 +190,7 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
       buf = pack([{ p, bytes: fs.readFileSync(file) }], p);
     }
     if (buf.length > MAX_PACK) throw new Error('파일이 너무 커요 (최대 50MB)');
-    return keep(record(newFid(), name, kind, buf));
+    return keep(record(newFid(), name, kind, buf, net));
   }
 
   // 호스트: 파일 고르기
@@ -194,6 +210,7 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
     if (r.canceled || !r.filePaths[0]) return null;
     const file = r.filePaths[0];
     let withFolder = false;
+    let net = false;
     if (KIND_OF[extOf(file)] === 'html') {
       const c = await dialog.showMessageBox(getWindow(), {
         type: 'question',
@@ -203,21 +220,24 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
         title: 'HTML 공유',
         message: '같은 폴더에 있는 이미지 · 스타일 · 스크립트도 함께 공유할까요?',
         detail: `${path.dirname(file)}\n(하위 폴더 ${MAX_DEPTH}단계까지, 최대 50MB · ${MAX_ENTRIES}개. 실행 파일 · 소리 · 동영상은 빼요)`,
+        checkboxLabel: '인터넷 접속 허용 (https 의 이미지 · 스크립트 · API). 참여자에게 표시돼요',
+        checkboxChecked: false,
       });
       if (c.response === 2) return null;
       withFolder = c.response === 0;
+      net = !!c.checkboxChecked;
     }
     try {
-      return fromFile(file, withFolder);
+      return fromFile(file, withFolder, net);
     } catch (err) {
       return { error: err.message };
     }
   });
   // 테스트 · 자동화용: 경로로 바로 (앱 화면에서만)
-  ipcMain.handle('file:from-path', (e, file, withFolder) => {
+  ipcMain.handle('file:from-path', (e, file, withFolder, net) => {
     if (!fromApp(e) || !process.env.JAM_TEST_OFFSCREEN) return null;
     try {
-      return fromFile(String(file), !!withFolder);
+      return fromFile(String(file), !!withFolder, net === true);
     } catch (err) {
       return { error: err.message };
     }
@@ -253,7 +273,7 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
     const buf = Buffer.from(bytes);
     if (buf.length !== m.size || sha256(buf) !== m.sha) return { error: '받은 파일이 손상됐어요 (해시 불일치)' };
     try {
-      return keep(record(m.fid, m.name, m.kind, buf));
+      return keep(record(m.fid, m.name, m.kind, buf, m.net === true));
     } catch (err) {
       return { error: `파일 형식이 이상해요: ${err.message}` };
     }
@@ -264,8 +284,8 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
   });
 
   // ---------- jamfile:// ----------
-  const respond = (body, type, status = 200, extra = {}) =>
-    new Response(body, { status, headers: { 'Content-Type': type, 'Content-Security-Policy': CSP, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', ...extra } });
+  const respond = (body, type, status = 200, extra = {}, net = false) =>
+    new Response(body, { status, headers: { 'Content-Type': type, 'Content-Security-Policy': net ? CSP_NET : CSP, 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'no-store', ...extra } });
   const notFound = () => respond('없는 파일이에요', 'text/plain; charset=utf-8', 404);
   function asset(rel) {
     for (const [prefix, dir] of Object.entries(ASSETS)) {
@@ -304,6 +324,15 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
       return notFound();
     }
     const fid = u.hostname;
+    // 일반 웹페이지가 jamfile:// 를 불러오거나(<img>, <iframe>, fetch) 링크로 여는 것은 막는다.
+    // 앱이 직접 여는 이동(Sec-Fetch-Site: none)과 jamfile 페이지 안에서의 요청만 허용
+    const fetchSite = req.headers.get('sec-fetch-site');
+    const ref = req.referrer && req.referrer !== 'about:client' ? req.referrer : req.headers.get('referer') || '';
+    const fromJamfile = ref.startsWith(`${SCHEME}://`);
+    if ((fetchSite && fetchSite !== 'none' && fetchSite !== 'same-origin' && !fromJamfile) || (ref && !fromJamfile)) {
+      if (debugLog) debugLog(`jamfile blocked ${req.url} site=${fetchSite} ref=${ref}`);
+      return respond('웹페이지에서는 공유 파일을 열 수 없어요', 'text/plain; charset=utf-8', 403);
+    }
     let rel;
     try {
       rel = decodeURIComponent(u.pathname).replace(/^\/+/, '');
@@ -325,12 +354,27 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
       const low = rel.toLowerCase();
       for (const [p, v] of r.entries) if (p.toLowerCase() === low) b = v;
     }
-    return b ? respond(b, mimeOf(rel)) : notFound();
+    return b ? respond(b, mimeOf(rel), 200, {}, r.net) : notFound();
   }
 
   return {
     attach(ses) {
       ses.protocol.handle(SCHEME, handle);
+      // 요청한 화면(frame)의 주소로 한 번 더 막기: 일반 웹페이지 안에서 jamfile:// 를 <img> · <iframe> 등으로 불러오는 것
+      // (referrer 를 안 보내는 요청도 여기서 걸림). 앱이 직접 여는 이동(mainFrame)은 그대로
+      ses.webRequest.onBeforeRequest({ urls: [`${SCHEME}://*/*`] }, (d, cb) => {
+        if (d.resourceType === 'mainFrame') return cb({});
+        let from = '';
+        try {
+          const f = d.frame;
+          from = (d.resourceType === 'subFrame' ? f && f.parent && f.parent.url : f && f.url) || '';
+        } catch {}
+        if (from && !from.startsWith(`${SCHEME}://`)) {
+          if (debugLog) debugLog(`jamfile blocked (frame) ${d.url} from=${from}`);
+          return cb({ cancel: true });
+        }
+        cb({});
+      });
     },
     has: (fid) => store.has(fid),
     _internal: { pack, unpack, store },
