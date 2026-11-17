@@ -421,6 +421,7 @@ function tabMenu(t, x, y) {
     { label: '새로고침', fn: () => t.ready && t.webview.reload() },
     { label: '탭 복제', fn: () => createTab(isStart(t.url) ? START_URL : t.url) },
     { label: t.pinned ? '고정 해제' : '탭 고정', fn: () => { t.pinned = !t.pinned; sortPinned(); renderTabs(); saveSession(); } },
+    { label: t.muted ? '탭 음소거 해제' : '탭 음소거', fn: () => setTabMuted(t, !t.muted) },
     '-',
     splitTab === t
       ? { label: '분할 화면 닫기', fn: () => setSplit(null) }

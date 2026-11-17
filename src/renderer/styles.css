@@ -42,6 +42,8 @@ code { font-family: Consolas, "Cascadia Mono", monospace; }
 .tab .title { flex: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tab .close { border: 0; background: transparent; width: 20px; height: 20px; border-radius: 50%; color: var(--muted); line-height: 1; flex-shrink: 0; }
 .tab .close:hover { background: var(--bg-4); color: var(--text); }
+.tab .audio { border: 0; background: transparent; width: 20px; height: 20px; border-radius: 50%; font-size: 12px; line-height: 1; padding: 0; flex-shrink: 0; opacity: .85; }
+.tab .audio:hover { background: var(--bg-4); opacity: 1; }
 .tab.jam { box-shadow: inset 0 2px 0 var(--accent); }
 .tab .jam-badge { font-size: 10px; font-weight: 800; color: var(--accent-ink); background: var(--accent); border-radius: 4px; padding: 0 4px; flex-shrink: 0; }
 .tab.loading .fav { animation: spin 1s linear infinite; }

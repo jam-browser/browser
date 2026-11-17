@@ -5,7 +5,8 @@
 //   npm run jam -- --no-relay    중계 서버 없이 (같은 네트워크 방식 jam:// 만)
 //   npm run jam -- --guests 2    게스트 여러 명
 //   npm run jam -- --fresh       프로필(로그인·설정·탭)을 지우고 새로 시작
-//   npm run jam -- --debug       각 앱에 CDP 디버그 포트 열기 (JAM_DEV_CDP_PORT 기본 9411 부터 비어 있는 포트를 골라 씀)
+//   npm run jam -- --guest-audio 게스트 창 소리도 켜기 (기본은 호스트만 소리, 겹쳐 들리지 않게)
+//   npm run jam -- --debug      각 앱에 CDP 디버그 포트 열기 (JAM_DEV_CDP_PORT 기본 9411 부터 비어 있는 포트를 골라 씀)
 //
 // 프로필은 .jam-dev/<이름> 에 남아서 다음 실행 때도 로그인·설정이 유지돼요.
 // 중계 서버는 옆 폴더의 backend 저장소(../backend/jam-relay.js)를 써요. 없으면 건너뛰어요.
@@ -110,6 +111,8 @@ async function freePorts(start, count) {
   names.forEach((name, i) => {
     const args = [ROOT, `--user-data-dir=${path.join(PROFILES, name)}`];
     if (debug) args.push(`--remote-debugging-port=${cdp[i]}`);
+    // 같은 PC 에서 같은 영상이 두 번 겹쳐 들리지 않게 게스트는 소리를 끈다 (--guest-audio 로 켜기)
+    if (name !== 'host' && !flag('--guest-audio')) args.push('--mute-audio');
     run(name, electron, args, { env: { ...process.env, JAM_DEV_INSTANCE: name } });
     console.log(`  ${name.padEnd(10)}  프로필 .jam-dev/${name}${debug ? `  CDP ${cdp[i]}` : ''}`);
   });
