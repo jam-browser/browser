@@ -9,7 +9,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "test": "node test/sync-test.js && node test/relay-test.js && node test/vault-test.js && node test/access-test.js && node test/nearby-test.js",
+    "test": "node test/sync-test.js && node test/relay-test.js && node test/vault-test.js && node test/access-test.js && node test/nearby-test.js && node test/mirror-test.js",
     "icon": "electron scripts/make-icon.js",
     "dist": "electron-builder --win --publish never",
     "release": "electron-builder --win --publish always"

@@ -357,6 +357,7 @@ jamApp.onShortcut((action) => {
     case 'devtools': activeTab?.webview.openDevTools(); break;
     case 'toggle-panel': togglePanel(); break;
     case 'lock': account.lockNow(); break;
+    case 'revoke-control': mirror.revokeAll('Esc 를 길게 눌러 화면 조작 권한을 모두 회수했어요'); break;
     case 'vault': account.open(); break;
     default: ui.shortcut(action);
   }
@@ -921,6 +922,7 @@ function adoptWelcome(ws, welcome, keys) {
   if (jam.myView) publishViewport(jam.myView);
   refreshAllViews();
   applyMedia();
+  mirror.onWelcome(welcome.room);
   for (const msg of ws.early.splice(0)) handleMessage(msg);
 }
 
@@ -958,6 +960,7 @@ function cleanupJam() {
   if (ws) {
     try { ws.close(); } catch {}
   }
+  mirror.reset();
   if (jam.tab && jam.tab.ready) jam.tab.webview.send('jam:clear');
   if (jam.lockedWcId != null) jamApp.setLock(jam.lockedWcId, false);
   jam.lockedWcId = null;
@@ -1213,6 +1216,13 @@ function handleMessage(msg) {
   if (!jam.active) return;
   const tab = jam.tab;
   switch (msg.type) {
+    case 'mirror':
+    case 'mv':
+    case 'mkey':
+    case 'mi':
+    case 'control':
+      mirror.handle(msg); // 화면 미러링 (mirror.js)
+      break;
     case 'members': {
       jam.room.members = msg.members;
       jam.room.hostId = msg.hostId;
@@ -1343,6 +1353,7 @@ function renderJam() {
   renderTabs();
   renderMinimap();
   renderNearby();
+  mirror.render();
   if (!jam.active) return;
   $('#nearby-row').hidden = !jam.isHost();
 
@@ -1403,7 +1414,7 @@ function renderMembers(force = false) {
     canView: m.id !== jam.you.id && m.view && jam.tab && sameDoc(m.view.url, jam.tab.url),
   }));
   // 내용이 같으면 다시 그리지 않는다 (버튼 클릭이 끊기지 않게)
-  const key = JSON.stringify([host, jam.room.hostId, jam.room.settings, rows.map((r) => [r.m.id, r.m.name, r.m.canCrossSite, r.status, !!r.canView, !!r.m.friend, !!r.m.verified])]);
+  const key = JSON.stringify([host, jam.room.hostId, jam.room.settings, !!jam.room.mirror, mirror.isMirroring(), rows.map((r) => [r.m.id, r.m.name, r.m.canCrossSite, r.status, !!r.canView, !!r.m.friend, !!r.m.verified, r.m.control])]);
   if (!force && key === membersKey) return;
   membersKey = key;
 
@@ -1432,7 +1443,9 @@ function renderMembers(force = false) {
                 : null,
             el('span', { class: `perm ${crossOk ? 'on' : ''}`, title: crossOk ? '다른 사이트 이동 가능' : '같은 사이트 안에서만 이동' }, crossOk ? '🌐' : '🔒')
           ),
-          el('div', { class: 'status' }, status)
+          el('div', { class: 'status' }, status),
+          m.control && m.control !== 'view' && jam.room.mirror ? el('div', { class: 'status ctrl' }, `화면 조작: ${JamMirror.LEVEL_LABEL[m.control]}`) : null,
+          mirror.controlSelect(m)
         ),
         el(
           'div',

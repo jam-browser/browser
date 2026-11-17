@@ -22,6 +22,7 @@ let scanner = null; // 근처 Jam 찾기
 let nearbyVisible = true;
 let nearbyList = [];
 let pairing = null; // 진행 중인 근처 페어링
+let pendingCapture = null; // 화면 미러링: 앱이 방금 요청한 탭 캡처 { wcId, until }
 const beaconId = crypto.randomBytes(12).toString('base64url');
 
 // Jam 탭의 webContents id → 다른 사이트 이동이 잠겨 있는지
@@ -96,6 +97,8 @@ function shortcutFor(input) {
   if (input.alt && key === 'arrowleft') return 'back';
   if (input.alt && key === 'arrowright') return 'forward';
   if (key === 'f12') return 'devtools';
+  // Esc 를 길게 누르면(자동 반복) 화면 미러링 조작 권한을 모두 회수
+  if (key === 'escape' && input.isAutoRepeat) return 'revoke-control';
   return null;
 }
 
@@ -227,6 +230,17 @@ const fromApp = (e) => mainWindow && e.sender === mainWindow.webContents;
 ipcMain.handle('relay:probe', async (e, urls) => {
   if (!fromApp(e) || !Array.isArray(urls)) return [];
   return Promise.all(urls.filter((u) => typeof u === 'string' && /^wss?:\/\/[^\s/]+$/i.test(u)).slice(0, 8).map((u) => probeRelay(u)));
+});
+
+// ---------- 화면 미러링: 그 탭(webview)만 잡는 화면 소스 ID ----------
+// 앱 화면 · 다른 탭 · 바탕화면은 잡히지 않는다. 오디오는 앱에서 요청하지 않는다
+ipcMain.handle('mirror:source-id', (e, wcId) => {
+  if (!fromApp(e)) throw new Error('forbidden');
+  const { webContents } = require('electron');
+  const wc = webContents.fromId(Number(wcId));
+  if (!wc || wc.getType() !== 'webview' || wc.hostWebContents !== mainWindow.webContents) throw new Error('탭을 찾을 수 없어요');
+  pendingCapture = { wcId: wc.id, until: Date.now() + 10000 }; // 이 탭에 대한 캡처 요청 한 번만 허락 (권한 처리기에서 확인)
+  return wc.getMediaSourceId(mainWindow.webContents);
 });
 
 // ---------- 근처 찾기 (UDP 3032, 같은 네트워크) ----------
@@ -550,13 +564,22 @@ app.whenReady().then(() => {
     const host = wc.hostWebContents;
     if (host) setTimeout(() => host.send('clipboard-written', wc.id), 150);
   };
-  ses.setPermissionRequestHandler((wc, permission, callback) => {
+  // 화면 미러링: 앱이 방금(10초 안) 그 탭에 대해 요청한 "영상만" 캡처만 허락. 웹페이지가 스스로 요청한 화면 캡처는 거절
+  const mirrorCapture = (wc, permission, details = {}, consume = false) => {
+    if (permission !== 'display-capture' || !pendingCapture || !wc) return false;
+    const ok = wc.id === pendingCapture.wcId && Date.now() < pendingCapture.until &&
+      String(details.securityOrigin || details.requestingUrl || '').startsWith('file://') === true &&
+      !(details.mediaTypes || []).includes('audio');
+    if (ok && consume) pendingCapture = null;
+    return ok;
+  };
+  ses.setPermissionRequestHandler((wc, permission, callback, details) => {
     notifyClipboard(wc, permission);
-    callback(ALLOWED_PERMISSIONS.has(permission));
+    callback(ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, details, true));
   });
-  ses.setPermissionCheckHandler((wc, permission) => {
+  ses.setPermissionCheckHandler((wc, permission, origin, details) => {
     notifyClipboard(wc, permission);
-    return ALLOWED_PERMISSIONS.has(permission);
+    return ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, { securityOrigin: origin, ...details });
   });
   setupDownloads(ses);
   // 브라우저 계정 · 비밀번호 뱅크 · 친구 (모두 이 PC 안에서만, 메인 프로세스가 키를 들고 있음)

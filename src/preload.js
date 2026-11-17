@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('jamApp', {
   cancelPair: () => ipcRenderer.invoke('nearby:pair-cancel'),
   onPairSas: (cb) => ipcRenderer.on('nearby:pair-sas', (_e, sas) => cb(sas)),
   onPairPending: (cb) => ipcRenderer.on('nearby:pair-pending', () => cb()),
+  // 화면 미러링: 그 탭만 잡는 소스 ID
+  mirrorSourceId: (wcId) => ipcRenderer.invoke('mirror:source-id', wcId),
   stopHost: () => ipcRenderer.invoke('jam:host-stop'),
   copy: (text) => ipcRenderer.invoke('clipboard:write', text),
   onOpenTab: (cb) => ipcRenderer.on('open-tab', (_e, url) => cb(url)),

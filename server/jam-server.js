@@ -16,6 +16,7 @@ const { sameSite, isSensitiveUrl } = require('../shared/site');
 const { deriveKeys, checkProof, seal, open, C2S, S2C } = require('../shared/jam-crypto');
 const ID = require('../shared/identity');
 const PAIR = require('../shared/pairing');
+const MIRROR = require('../shared/mirror');
 
 // 입장 방식: approval = 링크 + 호스트 승인(기본) · friends = 링크를 가진 친구만(자동 입장) · open = 링크만 있으면 자유 입장
 const ACCESS = new Set(['approval', 'friends', 'open']);
@@ -29,6 +30,11 @@ const APPROVAL_TIMEOUT = 120000; // 호스트 승인 대기 2분
 const RESUME_TTL = 5 * 60e3; // 끊긴 뒤 5분 안에는 승인 없이 복귀
 const RATE_PER_SEC = 100;
 const RATE_BURST = 200;
+// 화면 미러링 영상처럼 큰 메시지(4KB 넘음)는 개수 대신 바이트로 제한 (연결 하나당 초당 4MB, 순간 8MB)
+const BIG_MSG = 4096;
+const BYTE_RATE = 4 * 1024 * 1024;
+const BYTE_BURST = 8 * 1024 * 1024;
+const MIRROR_BACKLOG = 3 * 1024 * 1024; // 받는 쪽에 이만큼 쌓이면 영상 조각을 건너뛰고 다음 키프레임부터
 const PAIR_TIMEOUT = 30000; // 페어링: 키 교환 뒤 요청까지
 const TICKET_TTL = 60e3; // 페어링으로 받은 일회용 입장권 유효 시간
 
@@ -152,6 +158,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
   const publicMember = (m) => ({
     id: m.id, name: m.name, color: m.color, canCrossSite: m.canCrossSite, presence: m.presence, view: m.view,
     verified: !!m.fp, // 브라우저 계정 서명으로 신원이 확인됨
+    control: m.control || 'view', // 화면 미러링 조작 권한
     friend: !!m.friend, // 호스트의 친구 목록에 있음
   });
   // 설정은 참여자에게 보낼 때 호스트의 친구 목록(allow)을 빼고 보낸다
@@ -170,6 +177,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     current: room.current,
     settings: publicSettings(room),
     media: mediaOut(room),
+    mirror: room.mirror || null,
   });
   const pushMembers = (room) => broadcast(room, { type: 'members', members: publicMembers(room), hostId: room.hostId });
 
@@ -186,6 +194,25 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
   }
 
   const hostOf = (room) => room.members.get(room.hostId);
+  // 미러링하는 사람에게 키프레임 요청 (방마다 1초에 한 번까지)
+  function askKeyframe(room, force) {
+    const owner = room.mirror && room.members.get(room.mirror.by);
+    if (!owner) return;
+    const now = Date.now();
+    if (!force && now - room.lastKeyReq < 1000) return;
+    room.lastKeyReq = now;
+    send(owner.ws, { type: 'mkey' });
+  }
+  function endMirror(room) {
+    if (!room.mirror) return;
+    room.mirror = null;
+    for (const m of room.members.values()) {
+      m.control = 'view';
+      m.needKey = true;
+    }
+    broadcast(room, { type: 'mirror', mirror: null });
+    pushMembers(room);
+  }
   function sendJoinRequests(room) {
     const host = hostOf(room);
     if (!host) return;
@@ -206,6 +233,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     let pairState = null; // 근처 페어링 중: { target, th, key, sas }
     let tokens = RATE_BURST;
     let lastRefill = Date.now();
+    let bytes = BYTE_BURST;
     let drops = 0;
 
     // 일회용 nonce: 참여자는 이 값에 비밀키로 서명해서 "키를 안다"는 것만 증명한다 (키 자체는 전송 안 함)
@@ -230,6 +258,8 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         canCrossSite: false,
         presence: { url: null, title: '', ad: false, private: false, away: false },
         view: null,
+        control: 'view',
+        needKey: true, // 화면 미러링: 키프레임부터 받아야 함
         resume: crypto.randomBytes(24).toString('base64url'), // 잠깐 끊겼다 다시 들어올 때 승인 없이 복귀용
       };
       room.members.set(me.id, me);
@@ -237,6 +267,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       send(ws, { type: 'welcome', you: publicMember(me), resume: me.resume, room: snapshot(room) });
       broadcast(room, { type: 'members', members: publicMembers(room), hostId: room.hostId }, ws);
       if (kind === 'join') broadcast(room, { type: 'system', text: `${me.name}님이 Jam에 참여했어요` }, ws);
+      if (room.mirror) askKeyframe(room, true); // 새로 온 사람도 바로 화면을 볼 수 있게
     }
 
     function authenticate(msg) {
@@ -264,6 +295,8 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           settings: { allowAllCrossSite: false, access: ACCESS.has(msg.access) ? msg.access : 'approval' },
           allow: cleanAllow(msg.allow), // 호스트의 친구 지문 목록 (호스트 PC 안에서만, 참여자에게 보내지 않음)
           media: null,
+          mirror: null, // 화면 미러링: { sid, by, w, h, title, at }
+          lastKeyReq: 0,
           colorIndex: 0,
         };
         rooms.set(target.code, target);
@@ -430,6 +463,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       if (!room || !me) return;
       const r = room;
       r.members.delete(me.id);
+      if (r.mirror && r.mirror.by === me.id) endMirror(r); // 미러링하던 사람이 나가면 미러링 끝
       room = null;
       if (!me.kicked) r.resumes.set(me.resume, { expires: Date.now() + RESUME_TTL });
       if (r.members.size === 0) {
@@ -454,13 +488,24 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     ws.on('message', (raw, isBinary) => {
       // 메시지 폭주 방지 (초당 100개, 순간 200개까지)
       const now = Date.now();
-      tokens = Math.min(RATE_BURST, tokens + ((now - lastRefill) / 1000) * RATE_PER_SEC);
+      const dt = (now - lastRefill) / 1000;
+      tokens = Math.min(RATE_BURST, tokens + dt * RATE_PER_SEC);
+      bytes = Math.min(BYTE_BURST, bytes + dt * BYTE_RATE);
       lastRefill = now;
-      if (tokens < 1) {
-        if (++drops > 500) ws.close();
-        return;
+      const size = raw.length || raw.byteLength || 0;
+      if (size > BIG_MSG) {
+        if (bytes < size) {
+          if (++drops > 500) ws.close();
+          return;
+        }
+        bytes -= size;
+      } else {
+        if (tokens < 1) {
+          if (++drops > 500) ws.close();
+          return;
+        }
+        tokens--;
       }
-      tokens--;
 
       let msg;
       if (!ws.keys) {
@@ -485,6 +530,100 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       const isHost = me.id === room.hostId;
 
       switch (msg.type) {
+        // ---------- 화면 미러링 ----------
+        case 'mirror-start': {
+          if (!isHost) return;
+          const sid = String(msg.sid || '');
+          const w = int(msg.w, 4096);
+          const h = int(msg.h, 4096);
+          if (!/^[A-Za-z0-9]{6,24}$/.test(sid) || w < 16 || h < 16) return;
+          room.mirror = { sid, by: me.id, w, h, title: cleanText(msg.title, 200), at: Date.now() };
+          for (const m of room.members.values()) {
+            m.control = 'view';
+            m.needKey = true;
+          }
+          broadcast(room, { type: 'mirror', mirror: room.mirror });
+          broadcast(room, { type: 'system', text: `${me.name}님이 화면 미러링을 시작했어요 (${room.mirror.title || '탭'})` });
+          pushMembers(room);
+          break;
+        }
+        case 'mirror-stop': {
+          if (!room.mirror || (room.mirror.by !== me.id && !isHost)) return;
+          endMirror(room);
+          broadcast(room, { type: 'system', text: '화면 미러링이 끝났어요' });
+          break;
+        }
+        case 'mv': {
+          // 영상 조각: 미러링하는 사람만 보낼 수 있고, 다른 참여자에게 그대로 전달
+          const mir = room.mirror;
+          if (!mir || mir.by !== me.id || msg.sid !== mir.sid) return;
+          const fr = Number(msg.f);
+          const i = Number(msg.i);
+          const n = Number(msg.n);
+          if (!Number.isInteger(fr) || fr < 0 || !Number.isInteger(n) || n < 1 || n > 64 || !Number.isInteger(i) || i < 0 || i >= n) return;
+          if (typeof msg.d !== 'string' || msg.d.length > 45000 || !Number.isFinite(Number(msg.ts))) return;
+          const key = !!msg.k;
+          const out = { type: 'mv', sid: mir.sid, f: fr, k: key, i, n, ts: Number(msg.ts), d: msg.d };
+          if (key && i === 0) {
+            out.w = int(msg.w, 4096);
+            out.h = int(msg.h, 4096);
+            mir.w = out.w || mir.w;
+            mir.h = out.h || mir.h;
+          }
+          let wantKey = false;
+          for (const m of room.members.values()) {
+            if (m.ws === ws) continue;
+            if (m.ws.bufferedAmount > MIRROR_BACKLOG) {
+              m.needKey = true; // 너무 밀림 → 건너뛰고 다음 키프레임부터
+              wantKey = true;
+              continue;
+            }
+            if (m.needKey) {
+              if (!(key && i === 0)) {
+                wantKey = true;
+                continue;
+              }
+              m.needKey = false;
+            }
+            send(m.ws, out);
+          }
+          if (wantKey) askKeyframe(room, false);
+          break;
+        }
+        case 'mkey': {
+          if (!room.mirror || room.mirror.by === me.id) return;
+          me.needKey = true;
+          askKeyframe(room, false);
+          break;
+        }
+        case 'control': {
+          // 호스트가 참여자의 조작 권한을 정함
+          if (!isHost || !room.mirror) return;
+          const target = room.members.get(String(msg.id));
+          if (!target || target.id === room.mirror.by || !MIRROR.LEVELS.includes(msg.level)) return;
+          target.control = msg.level;
+          send(target.ws, { type: 'control', level: msg.level });
+          pushMembers(room);
+          break;
+        }
+        case 'mi': {
+          // 참여자의 조작 → 미러링하는 사람에게만 (권한 안에서, 서버에서도 한 번 거름)
+          const mir = room.mirror;
+          const level = me.control || 'view';
+          if (!mir || mir.by === me.id || level === 'view') return;
+          const owner = room.members.get(mir.by);
+          if (!owner) return;
+          if (msg.k === 'm') {
+            if (!MIRROR.canMouse(level)) return;
+            const mouse = MIRROR.cleanMouse(msg);
+            if (mouse) send(owner.ws, { type: 'mi', by: me.id, k: 'm', ...mouse });
+          } else if (msg.k === 'k') {
+            if ((msg.t !== 'd' && msg.t !== 'u') || !MIRROR.allowKey(level, msg.code, msg.mods)) return;
+            const ch = level === 'full' && typeof msg.key === 'string' && [...msg.key].length === 1 ? msg.key : undefined;
+            send(owner.ws, { type: 'mi', by: me.id, k: 'k', t: msg.t, code: MIRROR.mapKey(level, msg.code), key: ch, shift: !!(msg.mods && msg.mods.shift) });
+          }
+          break;
+        }
         case 'navigate': {
           if (!isShareable(msg.url)) return;
           if (!canGo(room, me, msg.url)) return send(ws, NO_CROSS);
