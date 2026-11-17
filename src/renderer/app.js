@@ -292,6 +292,20 @@ function closeTab(tab) {
   else renderTabs();
 }
 
+// ---------- 탭 소리 ---------- (tabWcId 는 아래 '확장 프로그램' 부분에 있음)
+function setTabMuted(tab, muted) {
+  tab.muted = muted;
+  if (tab.ready) tab.webview.setAudioMuted(muted);
+  else tab.webview.addEventListener('dom-ready', () => tab.webview.setAudioMuted(tab.muted), { once: true });
+  renderTabs();
+}
+jamApp.onTabAudio(({ wcId, audible }) => {
+  const tab = tabs.find((t) => tabWcId(t) === wcId);
+  if (!tab || tab.audible === audible) return;
+  tab.audible = audible;
+  renderTabs();
+});
+
 function renderTabs() {
   $('#tabs').replaceChildren(
     ...tabs.map((t) => {
@@ -308,6 +322,17 @@ function renderTabs() {
         fav,
         t === jam.tab ? el('span', { class: 'jam-badge' }, 'JAM') : null,
         el('span', { class: 'title' }, t.title || prettyUrl(t.url)),
+        // 소리 나는 탭 / 음소거한 탭: 누르면 음소거 켜기·끄기
+        t.audible || t.muted
+          ? el('button', {
+              class: `audio${t.muted ? ' muted' : ''}`,
+              title: t.muted ? '탭 음소거 해제' : '탭 음소거',
+              onclick: (e) => {
+                e.stopPropagation();
+                setTabMuted(t, !t.muted);
+              },
+            }, t.muted ? '🔇' : '🔊')
+          : null,
         el('button', {
           class: 'close',
           title: '탭 닫기',

@@ -122,9 +122,6 @@ function shortcutFor(input) {
 }
 
 app.on('web-contents-created', (_e, contents) => {
-  // 소리 끄기: 앱 창과 모든 웹페이지의 오디오를 음소거
-  contents.setAudioMuted(true);
-
   // 웹페이지용 webview에 보안 설정 + Jam 스크립트(커서/스크롤 동기화)를 주입
   contents.on('will-attach-webview', (_ev, webPreferences) => {
     delete webPreferences.preloadURL;
@@ -154,6 +151,11 @@ app.on('web-contents-created', (_e, contents) => {
     });
     const id = contents.id;
     contents.once('destroyed', () => lockedJamTabs.delete(id));
+
+    // 소리 나는 탭 표시용: 소리가 나기 시작/멈추면 앱 UI 에 알린다 (음소거는 탭마다 앱 UI 에서)
+    contents.on('audio-state-changed', (e) => {
+      contents.hostWebContents?.send('tab-audio', { wcId: id, audible: !!e.audible });
+    });
   }
 
   contents.on('before-input-event', (event, input) => {

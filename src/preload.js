@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('jamApp', {
   onDownload: (cb) => ipcRenderer.on('download:update', (_e, rec) => cb(rec)),
   onDownloadBlocked: (cb) => ipcRenderer.on('download-blocked', (_e, info) => cb(info)),
   markRemoteNav: (wcId) => ipcRenderer.send('jam:remote-nav', wcId),
+  onTabAudio: (cb) => ipcRenderer.on('tab-audio', (_e, s) => cb(s)),
   // 창
   toggleFullscreen: () => ipcRenderer.send('window:fullscreen'),
   onFullscreen: (cb) => ipcRenderer.on('fullscreen', (_e, on) => cb(on)),
