@@ -10,3 +10,5 @@ test/e2e/*.err
 LOCAL-SETUP.md
 # Jam 테스트 환경(npm run jam) 프로필
 .jam-dev/
+# 자동 생성 (npm install 때 scripts/build-toolbar-preload.js 가 만듦)
+src/generated/
