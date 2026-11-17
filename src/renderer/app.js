@@ -347,6 +347,8 @@ jamApp.onShortcut((action) => {
     case 'forward': activeTab?.webview.goForward(); break;
     case 'devtools': activeTab?.webview.openDevTools(); break;
     case 'toggle-panel': togglePanel(); break;
+    case 'lock': account.lockNow(); break;
+    case 'vault': account.open(); break;
     default: ui.shortcut(action);
   }
 });
@@ -354,7 +356,9 @@ document.addEventListener('keydown', (e) => {
   if (ui.handleKey(e)) return;
   const ctrl = e.ctrlKey || e.metaKey;
   const key = e.key.toLowerCase();
-  if (ctrl && key === 't') { e.preventDefault(); createTab(); }
+  if (ctrl && e.shiftKey && key === 'l') { e.preventDefault(); account.lockNow(); }
+  else if (ctrl && e.shiftKey && key === 'p') { e.preventDefault(); account.open(); }
+  else if (ctrl && key === 't') { e.preventDefault(); createTab(); }
   else if (ctrl && key === 'w') { e.preventDefault(); if (activeTab) closeTab(activeTab); }
   else if (ctrl && key === 'l') { e.preventDefault(); $('#url').focus(); }
   else if (ctrl && key === 'j') { e.preventDefault(); togglePanel(); }
@@ -555,7 +559,11 @@ async function connect(serverUrl, hello, { secret, onPending } = {}) {
               first = { ...hello, secret }; // 같은 PC 의 내 서버에만 보냄
             } else {
               // 참여: 비밀키는 보내지 않고 증명(proof)만. 이름·재접속 토큰은 암호화해서 (중계 서버도 못 봄)
-              const sealed = new Uint8Array(await sealMsg(keys, { name: hello.name, resume: hello.resume || null }));
+              // 브라우저 계정에 로그인되어 있으면 이 연결의 nonce + 방 코드에 서명해 신원을 증명 (친구 확인용, 공개 키 + 서명만)
+              const inner = { name: hello.name, resume: hello.resume || null };
+              const id = window.account ? await account.signJoin(msg.nonce, hello.code) : null;
+              if (id) inner.id = id;
+              const sealed = new Uint8Array(await sealMsg(keys, inner));
               let bin = '';
               for (const b of sealed) bin += String.fromCharCode(b);
               first = { type: 'join', code: hello.code, proof: await makeProof(keys, msg.nonce, hello.code), p: btoa(bin) };
@@ -679,11 +687,16 @@ async function startJam() {
       toast(`⚠️ 중계 서버에 연결하지 못했어요 (${relay.error}). 같은 네트워크용 초대 코드만 만들어요`);
     }
 
+    const access = account.accessMode();
+    if (access === 'friends' && !account.isUnlocked()) {
+      throw new Error('"친구만" Jam 은 브라우저 계정에 로그인해야 열 수 있어요 (👤 버튼)');
+    }
     const tab = activeTab && isShareable(activeTab.url) ? activeTab : createTab(ui.homeUrl());
     const secret = newSecret(); // 이 Jam만의 비밀키 (초대 코드에만 들어감)
     const { ws, welcome, keys } = await connect(
       serverUrl,
-      { type: 'create', name, url: tab.url, title: tab.title },
+      // allow: 친구 신원 지문 목록 → 내 PC 의 Jam 서버에만 전달 (참여자 · 중계 서버로는 나가지 않음)
+      { type: 'create', name, url: tab.url, title: tab.title, access, allow: account.friendFps() },
       { secret }
     );
     jam.serverUrl = serverUrl;
@@ -1206,8 +1219,8 @@ function renderJam() {
     ? '🌐 나는 다른 사이트로도 이동할 수 있어요'
     : '🔒 나는 같은 사이트 안에서만 이동할 수 있어요 (다른 사이트는 호스트 권한 필요)';
 
-  const ra = $('#require-approval');
-  ra.checked = jam.room.settings.requireApproval !== false;
+  const ra = $('#access-live');
+  ra.value = jam.room.settings.access || (jam.room.settings.requireApproval === false ? 'open' : 'approval');
   ra.disabled = !jam.isHost();
   $('#approval-row').title = jam.isHost() ? '' : '호스트만 바꿀 수 있어요';
 
@@ -1248,7 +1261,7 @@ function renderMembers(force = false) {
     canView: m.id !== jam.you.id && m.view && jam.tab && sameDoc(m.view.url, jam.tab.url),
   }));
   // 내용이 같으면 다시 그리지 않는다 (버튼 클릭이 끊기지 않게)
-  const key = JSON.stringify([host, jam.room.hostId, jam.room.settings, rows.map((r) => [r.m.id, r.m.name, r.m.canCrossSite, r.status, !!r.canView])]);
+  const key = JSON.stringify([host, jam.room.hostId, jam.room.settings, rows.map((r) => [r.m.id, r.m.name, r.m.canCrossSite, r.status, !!r.canView, !!r.m.friend, !!r.m.verified])]);
   if (!force && key === membersKey) return;
   membersKey = key;
 
@@ -1270,6 +1283,11 @@ function renderMembers(force = false) {
             m.name,
             isMe ? el('span', { class: 'muted' }, ' (나)') : null,
             isRoomHost ? el('span', { class: 'tag' }, '👑') : null,
+            m.friend
+              ? el('span', { class: 'badge-friend', title: '호스트의 친구 (서명으로 본인 확인됨)' }, '⭐')
+              : m.verified
+                ? el('span', { class: 'badge-friend', title: '브라우저 계정 서명으로 본인 확인됨' }, '🔏')
+                : null,
             el('span', { class: `perm ${crossOk ? 'on' : ''}`, title: crossOk ? '다른 사이트 이동 가능' : '같은 사이트 안에서만 이동' }, crossOk ? '🌐' : '🔒')
           ),
           el('div', { class: 'status' }, status)
@@ -1515,7 +1533,18 @@ function renderRequests() {
       el(
         'div',
         { class: 'req-card' },
-        el('div', { class: 'req-text' }, el('b', {}, r.name), '님이 Jam에 들어오려고 해요', el('div', { class: 'muted small' }, String(r.ip).startsWith('relay:') ? `인터넷(중계 서버)으로 접속 · ${r.ip.slice(6)}` : `같은 네트워크에서 접속 · ${r.ip}`)),
+        el(
+          'div',
+          { class: 'req-text' },
+          el('b', {}, r.name),
+          '님이 Jam에 들어오려고 해요',
+          el('div', { class: 'muted small' }, String(r.ip).startsWith('relay:') ? `인터넷(중계 서버)으로 접속 · ${r.ip.slice(6)}` : `같은 네트워크에서 접속 · ${r.ip}`),
+          r.friend
+            ? el('div', { class: 'req-id friend' }, `⭐ 내 친구 ${account.friendName(r.fp) || ''} (서명으로 본인 확인됨)`)
+            : r.fp
+              ? el('div', { class: 'req-id', title: '친구로 추가하지 않은 브라우저 계정이에요' }, `🔏 브라우저 계정 확인됨 · 지문 ${account.fpPretty(r.fp).slice(0, 14)}…`)
+              : el('div', { class: 'req-id unverified' }, '⚠️ 신원 확인 안 됨 (브라우저 계정 없이 접속) · 이름은 누구나 쓸 수 있어요')
+        ),
         el(
           'div',
           { class: 'req-actions' },
@@ -1574,7 +1603,16 @@ $('#copy-invite').addEventListener('click', async () => {
   toast('초대 코드를 복사했어요');
 });
 $('#jam-status').addEventListener('click', togglePanel);
-$('#require-approval').addEventListener('change', (e) => jam.send({ type: 'settings', requireApproval: e.target.checked }));
+$('#access-live').addEventListener('change', (e) => {
+  const access = e.target.value;
+  if (access === 'friends' && !account.isUnlocked()) {
+    toast('"친구만" 으로 바꾸려면 브라우저 계정에 로그인해야 해요');
+    e.target.value = jam.room.settings.access || 'approval';
+    return;
+  }
+  // 친구만으로 바꿀 때 지금 친구 목록도 함께 (내 PC 의 서버에만)
+  jam.send(access === 'friends' ? { type: 'settings', access, allow: account.friendFps() } : { type: 'settings', access });
+});
 
 function rejoinJamPage() {
   const cur = jam.room?.current;
@@ -1631,7 +1669,13 @@ $('#reactions').addEventListener('click', (e) => {
 // 시작
 // ======================================================================
 // customize.js 까지 모두 읽은 뒤에 시작 (지난번 탭 복원 등)
-document.addEventListener('DOMContentLoaded', () => {
+// 브라우저 계정이 있으면 잠금을 푼 뒤에 탭을 연다 (지난번 탭 · 기록이 잠금 화면 뒤에서 열리지 않게)
+document.addEventListener('DOMContentLoaded', async () => {
+  try {
+    await account.gate();
+  } catch (e) {
+    console.error(e);
+  }
   ui.boot();
   renderJam();
 });

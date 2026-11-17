@@ -625,3 +625,159 @@ ipcRenderer.on('jam:media-apply', (_e, s) => {
   if (s.playing && video.paused) video.play().catch(() => {});
   if (!s.playing && !video.paused) video.pause();
 });
+
+// ======================================================================
+// 비밀번호 뱅크: 로그인 칸 찾기 · 🔑 버튼 · 직접 눌렀을 때만 채우기 · 저장 제안
+//  - 메인 프로세스와 바로 주고받고, 앱 화면에는 비밀번호가 가지 않는다
+//  - 채우기는 지금 사이트와 저장된 사이트의 출처(https://host:port)가 정확히 같을 때만 (메인이 확인)
+//  - 진짜 사용자 클릭(isTrusted)일 때만 채운다 → 페이지가 몰래 채우게 만들 수 없음
+// ======================================================================
+let pwFields = null; // { pw, user, form }
+let pwState = { unlocked: false, locked: false, accounts: [] };
+let pwBubble = null;
+let pwMenu = null;
+let lastCaptureKey = '';
+let lastCaptureAt = 0;
+
+const isVisible = (el) => {
+  if (!el || !el.isConnected) return false;
+  const r = el.getBoundingClientRect();
+  if (r.width < 2 || r.height < 2) return false;
+  const st = getComputedStyle(el);
+  return st.visibility !== 'hidden' && st.display !== 'none';
+};
+
+function findLoginFields() {
+  const pw = [...document.querySelectorAll('input[type="password"]')].find(isVisible);
+  if (!pw) return null;
+  const scope = pw.form || pw.closest('form') || document;
+  const before = [...scope.querySelectorAll('input:not([type]), input[type="text"], input[type="email"], input[type="tel"]')]
+    .filter((i) => isVisible(i) && i.compareDocumentPosition(pw) & Node.DOCUMENT_POSITION_FOLLOWING);
+  return { pw, user: before.pop() || null, form: pw.form || pw.closest('form') };
+}
+
+function setFieldValue(el, value) {
+  if (!el) return;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+  setter.call(el, value); // React 같은 프레임워크도 값이 바뀐 걸 알게
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function hidePwUi() {
+  if (pwBubble) pwBubble.remove();
+  if (pwMenu) pwMenu.remove();
+  pwMenu = null;
+}
+
+function showPwBubble() {
+  hidePwUi();
+  if (!pwFields || !isVisible(pwFields.pw)) return;
+  const n = pwState.accounts.length;
+  if (!n && !pwState.locked) return; // 저장된 게 없으면 조용히
+  const { root } = getLayer();
+  const r = pwFields.pw.getBoundingClientRect();
+  pwBubble = css(document.createElement('div'), {
+    position: 'absolute', left: `${r.right + window.scrollX - 30}px`, top: `${r.top + window.scrollY + (r.height - 24) / 2}px`,
+    width: '24px', height: '24px', 'border-radius': '6px', background: '#2ee6a6', color: '#062a1f',
+    display: 'grid', 'place-items': 'center', font: '14px/1 "Segoe UI Emoji",sans-serif', cursor: 'pointer',
+    'pointer-events': 'auto', 'box-shadow': '0 1px 4px rgba(0,0,0,.35)',
+  });
+  pwBubble.textContent = pwState.locked ? '🔒' : '🔑';
+  pwBubble.title = pwState.locked ? 'Jam Browser 계정이 잠겨 있어요 (잠금을 풀면 저장된 로그인을 쓸 수 있어요)' : `저장된 로그인 ${n}개`;
+  pwBubble.addEventListener('mousedown', (e) => e.preventDefault(), true);
+  pwBubble.addEventListener('click', (e) => {
+    if (!e.isTrusted || pwState.locked) return;
+    e.preventDefault();
+    e.stopPropagation();
+    showPwMenu();
+  });
+  root.appendChild(pwBubble);
+}
+
+function showPwMenu() {
+  if (pwMenu) pwMenu.remove();
+  const { root } = getLayer();
+  const r = pwFields.pw.getBoundingClientRect();
+  pwMenu = css(document.createElement('div'), {
+    position: 'absolute', left: `${r.left + window.scrollX}px`, top: `${r.bottom + window.scrollY + 4}px`, 'min-width': `${Math.max(200, r.width)}px`,
+    background: '#1b1b1b', color: '#f2f2f2', 'border-radius': '8px', padding: '4px', 'box-shadow': '0 8px 24px rgba(0,0,0,.4)',
+    font: '13px/1.4 "Segoe UI","Malgun Gothic",sans-serif', 'pointer-events': 'auto',
+  });
+  const head = css(document.createElement('div'), { padding: '4px 8px', color: '#a7a7a7', 'font-size': '11px' });
+  head.textContent = 'Jam Browser 비밀번호 뱅크';
+  pwMenu.appendChild(head);
+  for (const acc of pwState.accounts) {
+    const item = css(document.createElement('div'), { padding: '7px 10px', 'border-radius': '6px', cursor: 'pointer' });
+    item.textContent = `🔑 ${acc.username || '(아이디 없음)'}`;
+    item.addEventListener('mouseenter', () => css(item, { background: '#2e2e2e' }));
+    item.addEventListener('mouseleave', () => css(item, { background: 'transparent' }));
+    item.addEventListener('mousedown', (e) => e.preventDefault(), true);
+    item.addEventListener('click', (e) => {
+      if (!e.isTrusted) return;
+      e.preventDefault();
+      e.stopPropagation();
+      ipcRenderer.send('pw:fill-request', { id: acc.id });
+      hidePwUi();
+    });
+    pwMenu.appendChild(item);
+  }
+  root.appendChild(pwMenu);
+}
+
+document.addEventListener('mousedown', (e) => {
+  // 닫힌 shadow 안의 요소는 document 쪽에서 보면 host 로만 보인다 → host 를 눌렀으면 메뉴(또는 🔑) 안쪽
+  if (pwMenu && e.target !== layer?.host) {
+    pwMenu.remove();
+    pwMenu = null;
+  }
+}, true);
+
+ipcRenderer.on('pw:available', (_e, s) => {
+  pwState = { unlocked: !!s.unlocked, locked: !!s.locked, accounts: Array.isArray(s.accounts) ? s.accounts : [] };
+  showPwBubble();
+});
+ipcRenderer.on('pw:fill', (_e, { username, password }) => {
+  if (!pwFields) return;
+  if (pwFields.user && username) setFieldValue(pwFields.user, username);
+  setFieldValue(pwFields.pw, password);
+});
+
+// 로그인할 때(제출 · Enter · 버튼) 아이디/비밀번호를 메인으로 보내 저장을 제안 (계정이 열려 있을 때만)
+function captureLogin() {
+  if (!pwFields || !pwState.unlocked) return;
+  const password = pwFields.pw.value;
+  if (!password) return;
+  const username = pwFields.user ? pwFields.user.value : '';
+  const key = `${username}\u0000${password}`;
+  if (key === lastCaptureKey && Date.now() - lastCaptureAt < 3000) return;
+  lastCaptureKey = key;
+  lastCaptureAt = Date.now();
+  ipcRenderer.send('pw:captured', { username, password });
+}
+
+function watchLoginFields(f) {
+  if (f.form) f.form.addEventListener('submit', captureLogin, true);
+  f.pw.addEventListener('keydown', (e) => e.key === 'Enter' && captureLogin(), true);
+  const scope = f.form || f.pw.parentElement?.parentElement || document;
+  for (const b of scope.querySelectorAll('button, input[type="submit"]')) b.addEventListener('click', captureLogin, true);
+}
+
+const scanLoginFields = throttle(() => {
+  const f = findLoginFields();
+  if (!f) {
+    pwFields = null;
+    hidePwUi();
+    return;
+  }
+  if (!pwFields || f.pw !== pwFields.pw) {
+    pwFields = f;
+    watchLoginFields(f);
+    ipcRenderer.send('pw:form-found');
+  } else showPwBubble();
+}, 600);
+window.addEventListener('DOMContentLoaded', () => {
+  scanLoginFields();
+  new MutationObserver(scanLoginFields).observe(document.documentElement, { childList: true, subtree: true });
+});
+window.addEventListener('resize', scanLoginFields);
