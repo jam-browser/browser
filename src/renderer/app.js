@@ -260,12 +260,22 @@ function activateTab(tab) {
   }
   renderTabs();
   updateToolbar();
+  notifyExtActiveTab(tab);
   updateDrift();
   renderMinimap();
   ui.afterActivate(tab);
   if (typeof updateClipSiteBanner === 'function') updateClipSiteBanner();
   renderLoginBanner();
   renderFollowFrame();
+}
+
+// 확장 프로그램에 지금 보고 있는 탭을 알린다 (아직 webview 가 안 붙었으면 붙은 뒤에)
+function notifyExtActiveTab(tab) {
+  const id = tabWcId(tab);
+  if (id != null) return jamApp.extTabActivated(id);
+  tab.webview.addEventListener('did-attach', () => {
+    if (tab === activeTab) jamApp.extTabActivated(tabWcId(tab));
+  }, { once: true });
 }
 
 function closeTab(tab) {
@@ -343,6 +353,26 @@ $('#reload').addEventListener('click', () => activeTab?.webview.reload());
 $('#new-tab').addEventListener('click', () => createTab());
 
 jamApp.onOpenTab((url) => createTab(url));
+
+// ---------- Chrome 확장 프로그램 ----------
+const tabWcId = (tab) => {
+  try { return tab.webview.getWebContentsId(); } catch { return null; } // 아직 붙기 전
+};
+const tabByWcId = (wcId) => tabs.find((t) => tabWcId(t) === wcId);
+// 확장 프로그램이 연 탭 (chrome.tabs.create): 만든 뒤 webContents id 를 돌려준다
+jamApp.onExtCreateTab(({ reqId, url, active }) => {
+  const tab = createTab(url || ui.newTabUrl(), { activate: active });
+  tab.webview.addEventListener('did-attach', () => jamApp.extTabCreated(reqId, tabWcId(tab)), { once: true });
+});
+jamApp.onExtSelectTab((wcId) => {
+  const tab = tabByWcId(wcId);
+  if (tab && tab !== activeTab) activateTab(tab);
+});
+jamApp.onExtCloseTab((wcId) => {
+  const tab = tabByWcId(wcId);
+  if (tab) closeTab(tab);
+});
+$('#ext-store').addEventListener('click', () => createTab('https://chromewebstore.google.com/'));
 jamApp.onNavBlocked((url) => blockedNav(url));
 jamApp.onShortcut((action) => {
   const i = tabs.indexOf(activeTab);
