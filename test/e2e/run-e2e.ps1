@@ -17,4 +17,6 @@ $deadline = (Get-Date).AddSeconds(40)
 while ((Get-Date) -lt $deadline) { try { Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$hostPort/json/list" -TimeoutSec 2 | Out-Null; Invoke-WebRequest -UseBasicParsing "http://127.0.0.1:$guestPort/json/list" -TimeoutSec 2 | Out-Null; break } catch { Start-Sleep -Milliseconds 500 } }
 if ((Get-Date) -ge $deadline) { Write-Host "Could not reach app debug ports $hostPort/$guestPort. See host.err. If Windows reserves them, set JAM_E2E_HOST_PORT / JAM_E2E_GUEST_PORT." -ForegroundColor Red; exit 2 }
 Start-Sleep -Seconds 4
+# Fresh profiles open on the browser-account welcome screen; press "skip" so tabs open
+node "$sp\skip-account.js" $hostPort $guestPort
 node "$sp\$($args[0])" $app
