@@ -305,6 +305,7 @@ function getLayer() {
   root.append(views, cursorsBox);
   (document.body || document.documentElement).appendChild(host);
   layer = { host, root, views, cursorsBox };
+  if (typeof applyMirrorLayer === 'function') applyMirrorLayer();
   // 레이어가 새로 만들어지면 (페이지가 body를 갈아끼운 경우) 기존 요소를 다시 붙인다
   for (const c of cursors.values()) cursorsBox.appendChild(c.el);
   for (const v of views_.values()) views.appendChild(v.el);
@@ -667,7 +668,9 @@ function setFieldValue(el, value) {
 function hidePwUi() {
   if (pwBubble) pwBubble.remove();
   if (pwMenu) pwMenu.remove();
+  const had = !!pwMenu;
   pwMenu = null;
+  if (had && typeof reportFocus === 'function') setTimeout(reportFocus, 0);
 }
 
 function showPwBubble() {
@@ -723,6 +726,7 @@ function showPwMenu() {
     pwMenu.appendChild(item);
   }
   root.appendChild(pwMenu);
+  if (typeof reportFocus === 'function') reportFocus(); // 미러링 중이면 영상을 잠시 멈추도록
 }
 
 document.addEventListener('mousedown', (e) => {
@@ -730,6 +734,7 @@ document.addEventListener('mousedown', (e) => {
   if (pwMenu && e.target !== layer?.host) {
     pwMenu.remove();
     pwMenu = null;
+    if (typeof reportFocus === 'function') setTimeout(reportFocus, 0);
   }
 }, true);
 
@@ -746,6 +751,7 @@ ipcRenderer.on('pw:fill', (_e, { username, password }) => {
 // 로그인할 때(제출 · Enter · 버튼) 아이디/비밀번호를 메인으로 보내 저장을 제안 (계정이 열려 있을 때만)
 function captureLogin() {
   if (!pwFields || !pwState.unlocked) return;
+  if (remoteTouched) return; // 다른 컴퓨터의 입력(화면 미러링 조작)이 들어온 페이지면 저장 제안 안 함
   const password = pwFields.pw.value;
   if (!password) return;
   const username = pwFields.user ? pwFields.user.value : '';
@@ -781,3 +787,197 @@ window.addEventListener('DOMContentLoaded', () => {
   new MutationObserver(scanLoginFields).observe(document.documentElement, { childList: true, subtree: true });
 });
 window.addEventListener('resize', scanLoginFields);
+
+// ======================================================================
+// 화면 미러링 (호스트 쪽 탭)
+//  - 메인이 원격 조작을 넣기 전에 "그 자리에 뭐가 있나"를 물어보면, 요소 정보만 알려 준다 (입력값은 절대 안 보냄)
+//    판단은 메인이 shared/mirror.js 로 한다. 넣기로 하면 그 요소에 대해서만 잠깐 허락(arm)해 두고,
+//    그 사이 다른 요소로 가는 누르기 · 키는 막는다 (페이지가 그 사이 바뀐 경우 대비)
+//  - 다른 컴퓨터의 입력이 한 번이라도 들어온 페이지에서는 비밀번호 저장을 제안하지 않는다
+//  - 호스트가 글자 칸에 입력하거나 비밀 칸 · 🔑 메뉴에 있으면 앱에 알린다 → 앱이 영상을 잠시 멈춤
+// ======================================================================
+let mirrorMode = false;
+let remoteTouched = false;
+let armed = null; // { kind: 'mouse' | 'key', el, until }
+
+const ACT_SEL = 'a[href],button,input,select,textarea,label,summary,option,[role="button"],[role="link"],[role="menuitem"],[role="tab"],[role="checkbox"],[role="switch"],[role="option"],[onclick],[contenteditable=""],[contenteditable="true"]';
+const NON_TEXT_INPUT = /^(button|submit|reset|image|checkbox|radio|range|color|file|hidden)$/i;
+
+function deepAt(x, y) {
+  let el = document.elementFromPoint(x, y);
+  for (let i = 0; i < 8 && el; i++) {
+    if (el.shadowRoot) {
+      const inner = el.shadowRoot.elementFromPoint(x, y);
+      if (inner && inner !== el) {
+        el = inner;
+        continue;
+      }
+    }
+    if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') {
+      let doc = null;
+      try {
+        doc = el.contentDocument; // 같은 출처 iframe 만 안을 볼 수 있음
+      } catch {}
+      if (doc) {
+        const r = el.getBoundingClientRect();
+        x -= r.left + el.clientLeft;
+        y -= r.top + el.clientTop;
+        const inner = doc.elementFromPoint(x, y);
+        if (inner) {
+          el = inner;
+          continue;
+        }
+      }
+    }
+    break;
+  }
+  return el;
+}
+function deepActive() {
+  let a = document.activeElement;
+  for (let i = 0; i < 8 && a; i++) {
+    if (a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    else if (a.tagName === 'IFRAME' || a.tagName === 'FRAME') {
+      let d = null;
+      try {
+        d = a.contentDocument;
+      } catch {}
+      if (d && d.activeElement && d.activeElement !== d.body) a = d.activeElement;
+      else break;
+    } else break;
+  }
+  return a;
+}
+const cut = (v, n = 200) => (typeof v === 'string' ? v.slice(0, n) : '');
+/** 요소 정보 (입력칸의 값은 절대 담지 않음) */
+function describe(el) {
+  if (!el || !el.tagName) return null;
+  if (layer && el === layer.host) return { pwLayer: true };
+  const tag = el.tagName.toLowerCase();
+  if (tag === 'iframe' || tag === 'frame' || tag === 'embed' || tag === 'object') {
+    return { tag, frame: cut(`${el.src || el.data || ''} ${el.name || ''} ${el.title || ''}`, 400) };
+  }
+  let act = el.closest ? el.closest(ACT_SEL) : null;
+  if (!act) {
+    try {
+      if (getComputedStyle(el).cursor === 'pointer') act = el;
+    } catch {}
+  }
+  const t = act || el;
+  const ttag = t.tagName.toLowerCase();
+  const editable = !!(t.isContentEditable || (ttag === 'input' && !NON_TEXT_INPUT.test(t.type || '')) || ttag === 'textarea');
+  const form = t.form || (t.closest && t.closest('form'));
+  const inLogin = !!(form && form.querySelector('input[type="password"]')) || !!(pwFields && (t === pwFields.user || t === pwFields.pw));
+  const attr = (n) => (t.getAttribute ? t.getAttribute(n) : '') || '';
+  let text = '';
+  if (!editable) {
+    try {
+      text = ttag === 'input' ? String(t.value || '') : String(t.innerText || t.textContent || '');
+    } catch {}
+  }
+  const img = t.querySelector ? t.querySelector('img[alt]') : null;
+  const link = t.closest ? t.closest('a[href]') : null;
+  return {
+    tag: ttag,
+    type: cut(String(t.type || ''), 20).toLowerCase(),
+    act: !!act,
+    editable,
+    ac: cut(attr('autocomplete'), 60),
+    name: cut(attr('name'), 80),
+    id: cut(String(t.id || ''), 80),
+    ph: cut(attr('placeholder'), 80),
+    aria: cut(attr('aria-label'), 120),
+    title: cut(attr('title'), 120),
+    alt: cut((img && img.alt) || attr('alt'), 80),
+    text: cut(text.trim(), 200),
+    href: cut(link ? link.href : '', 300),
+    action: cut(form ? form.getAttribute('action') || '' : '', 200),
+    formPw: inLogin,
+  };
+}
+
+ipcRenderer.on('mirror:probe', (_e, q) => {
+  let d = null;
+  let el = null;
+  const mouse = String(q.kind || '').startsWith('mouse');
+  try {
+    el = mouse ? deepAt(Number(q.x), Number(q.y)) : deepActive();
+    d = describe(el);
+  } catch {}
+  armed = { kind: mouse ? 'mouse' : 'key', el, until: Date.now() + 300 };
+  remoteTouched = true; // 이 페이지엔 다른 컴퓨터의 입력이 들어옴 → 비밀번호 저장 제안 안 함
+  ipcRenderer.send('mirror:probe-result', { id: q.id, d });
+});
+ipcRenderer.on('mirror:disarm', () => (armed = null));
+
+const related = (a, b) => !!a && !!b && (a === b || (a.contains && a.contains(b)) || (b.contains && b.contains(a)));
+function armedFor(kind) {
+  if (!armed || armed.kind !== kind) return null;
+  if (Date.now() > armed.until) {
+    armed = null;
+    return null;
+  }
+  return armed;
+}
+// 원격 누르기 · 키가 허락된 요소가 아닌 곳으로 가면 막는다
+function guardRemote(kind) {
+  return (e) => {
+    const a = armedFor(kind);
+    if (!a || !e.isTrusted) return;
+    const target = (e.composedPath && e.composedPath()[0]) || e.target;
+    if (kind === 'key' ? target === a.el || related(a.el, target) : related(a.el, target)) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  };
+}
+for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click', 'auxclick', 'dblclick']) window.addEventListener(t, guardRemote('mouse'), true);
+for (const t of ['keydown', 'keypress', 'keyup']) window.addEventListener(t, guardRemote('key'), true);
+
+// ---- 호스트가 입력 중 · 비밀 칸에 있는지 앱에 알림 (미러링 중일 때만) ----
+let lastFocusKey = '';
+function reportFocus() {
+  if (!mirrorMode) return;
+  let d = null;
+  try {
+    const a = deepActive();
+    d = a && a !== document.body && a !== document.documentElement ? describe(a) : null;
+  } catch {}
+  if (pwMenu) d = { pwMenu: true };
+  const key = JSON.stringify(d);
+  if (key === lastFocusKey) return;
+  lastFocusKey = key;
+  send('mirror:focus', d);
+}
+const reportFocusSoon = () => setTimeout(reportFocus, 0);
+document.addEventListener('focusin', reportFocusSoon, true);
+document.addEventListener('focusout', reportFocusSoon, true);
+const sendTyping = throttle(() => send('mirror:typing', {}), 150);
+window.addEventListener(
+  'keydown',
+  (e) => {
+    if (!mirrorMode || !e.isTrusted || armedFor('key')) return; // 원격 키는 호스트 입력이 아님
+    const a = deepActive();
+    if (!a) return;
+    const d = describe(a);
+    if (d && d.editable) sendTyping();
+  },
+  true
+);
+
+ipcRenderer.on('jam:mirror-mode', (_e, on) => {
+  mirrorMode = !!on;
+  lastFocusKey = '';
+  applyMirrorLayer();
+  if (mirrorMode) reportFocus();
+});
+// 미러링 중엔 참여자 커서 · 화면 사각형을 숨긴다 (영상에 같이 찍히지 않게)
+function applyMirrorLayer() {
+  if (!layer) return;
+  try {
+    void mirrorMode;
+  } catch {
+    return; // 아직 초기화 전
+  }
+  layer.views.style.display = mirrorMode ? 'none' : '';
+  layer.cursorsBox.style.display = mirrorMode ? 'none' : '';
+}

@@ -89,6 +89,22 @@
         </div>
         <div id="reaction-layer"></div>
         <div id="minimap" hidden title="페이지 전체에서 각자 보고 있는 영역"></div>
+        <!-- 화면 미러링: 참여자 화면 (호스트 탭의 영상) -->
+        <div id="mirror-view" hidden>
+          <div class="mirror-bar">
+            <span id="mirror-title"></span>
+            <span id="mirror-level" class="muted small"></span>
+            <span id="mirror-q" class="muted small" title="받는 화면 크기 · 초당 장수"></span>
+            <div class="spacer"></div>
+            <button id="mirror-req" class="text-btn small" title="호스트에게 마우스 · 키 조작을 요청" hidden>✋ 조작 요청</button>
+            <button id="mirror-hide" class="text-btn small" title="미러 화면 내리고 내 탭 보기 (오버레이의 🖥 로 다시 열기)">내 탭 보기</button>
+          </div>
+          <canvas id="mirror-canvas" tabindex="0"></canvas>
+          <div id="mirror-wait" class="muted">호스트 화면을 받는 중…</div>
+          <div id="mirror-pause" hidden></div>
+        </div>
+        <!-- 화면 미러링: 호스트 쪽 "누가 조작 중" 표시 -->
+        <div id="mirror-ctrl" hidden></div>
         <!-- 다른 사람 화면을 따라가는 중일 때 테두리 -->
         <div id="follow-frame" hidden><span id="follow-label"></span></div>
         <!-- 호스트: 참여 요청 -->
@@ -97,6 +113,7 @@
         <div id="jam-overlay" hidden>
           <span class="ov-badge" title="진행 중인 Jam">JAM</span>
           <div id="ov-people"></div>
+          <button id="ov-mirror" class="ov-btn" title="호스트 화면(미러링) 다시 보기" hidden>🖥</button>
           <button id="ov-panel" class="ov-btn" title="Jam 패널 열기/닫기 (Ctrl+J)">💬<span id="ov-unread" class="badge" hidden></span></button>
         </div>
       </section>
@@ -192,6 +209,13 @@
               </select>
             </label>
             <div id="my-perm" class="muted small"></div>
+          </div>
+
+          <div class="section mirror-section" id="mirror-section" hidden>
+            <div class="section-title">화면 미러링 <span class="muted small">호스트 · 소리 없음</span></div>
+            <button id="mirror-toggle" class="secondary-btn">🖥 지금 탭 화면 미러링</button>
+            <p id="mirror-hint" class="muted small"></p>
+            <p id="mirror-stat" class="muted small" hidden></p>
           </div>
 
           <div class="section now">
@@ -560,6 +584,8 @@
   <script src="app.js"></script>
   <script src="safety.js"></script>
   <script src="customize.js"></script>
+  <script src="../../shared/mirror.js"></script>
+  <script src="mirror.js"></script>
   <script src="account.js"></script>
 </body>
 </html>

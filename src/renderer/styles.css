@@ -506,3 +506,22 @@ body.fullscreen #app { grid-template-columns: minmax(0,1fr) !important; grid-tem
 #pair-sas { font: 800 34px/1.2 Consolas, "Cascadia Mono", monospace; letter-spacing: 4px; color: var(--accent); }
 .req-sas { margin-top: 6px; padding: 6px 8px; border-radius: 8px; background: rgba(46,230,166,.1); font-size: 12px; }
 .req-sas b { font: 800 16px Consolas, monospace; letter-spacing: 2px; color: var(--accent); }
+/* ---------- 화면 미러링 ---------- */
+#mirror-view { position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column; background: #0b0b0b; }
+#mirror-view[hidden] { display: none; }
+.mirror-bar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: var(--bg-2); border-bottom: 1px solid var(--line); color: var(--text); }
+.mirror-bar #mirror-title { font-weight: 700; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#mirror-canvas { flex: 1; min-height: 0; width: 100%; height: 100%; object-fit: contain; outline: none; cursor: default; }
+#mirror-canvas.can-control { cursor: crosshair; }
+#mirror-canvas.can-control:focus { box-shadow: inset 0 0 0 2px var(--accent); }
+#mirror-wait { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #aaa; }
+#mirror-ctrl { position: absolute; top: 10px; left: 10px; z-index: 11; padding: 4px 10px; border-radius: 999px; background: rgba(0,0,0,.75); color: #fff;
+  border: 2px solid var(--accent); font-size: 12px; font-weight: 700; pointer-events: none; }
+.mirror-section #mirror-toggle { width: 100%; height: 36px; }
+.mirror-section #mirror-toggle.danger { color: var(--danger); border-color: var(--danger); }
+.mirror-ctl { display: flex; align-items: center; gap: 6px; margin-top: 4px; flex-wrap: wrap; font-size: 11px; }
+.mirror-ctl label { display: inline-flex; align-items: center; gap: 3px; cursor: pointer; }
+select.mirror-keys { max-width: 100%; height: 26px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg-3); color: var(--text); font-size: 11px; }
+#mirror-pause { position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%); padding: 6px 14px; border-radius: 999px; background: rgba(0,0,0,.8); color: #fff; font-size: 13px; pointer-events: none; }
+#mirror-q { font-variant-numeric: tabular-nums; }
+.member .status.ctrl { color: var(--accent); }
