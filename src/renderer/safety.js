@@ -77,6 +77,7 @@ $('#clip-site-close').addEventListener('click', () => {
 
 // app.js 의 탭 이벤트에서 호출된다 (모든 탭 대상)
 function onSafetyPageEvent(tab, channel, data) {
+  if (!pref('clipboardWarn')) return; // 설정: 클립보드 경고 끔
   if (channel === 'jam:clipboard') checkClipboard(tab, data || {});
   else if (channel === 'jam:clipboard-site') {
     tab.clipboardSite = true;

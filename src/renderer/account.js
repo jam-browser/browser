@@ -225,6 +225,10 @@ const account = (() => {
   });
 
   // ---------- 사이트 로그인 저장 제안 ----------
+  // 저장한 로그인 사이트와 비슷한 가짜 주소에서 로그인 칸이 보이면 경고
+  jamVault.onLookalike((info) => {
+    toast(`⚠️ 주의: 지금 사이트(${info.host})는 저장한 로그인 사이트 ${info.like} 와 비슷한 다른 주소예요. 피싱일 수 있어요. 🔑 자동 입력은 하지 않아요`);
+  });
   jamVault.onOfferSave((info) => {
     let host = info.origin;
     try { host = new URL(info.origin).host; } catch {}

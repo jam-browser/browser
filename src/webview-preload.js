@@ -767,7 +767,7 @@ function showPwBubble() {
   hidePwUi();
   if (!pwFields || !isVisible(pwFields.pw)) return;
   const n = pwState.accounts.length;
-  if (!n && !pwState.locked) return; // 저장된 게 없으면 조용히
+  if (!n && !pwState.locked && !pwState.warn) return; // 저장된 게 없으면 조용히
   const { root } = getLayer();
   const r = pwFields.pw.getBoundingClientRect();
   pwBubble = css(document.createElement('div'), {
@@ -776,11 +776,15 @@ function showPwBubble() {
     display: 'grid', 'place-items': 'center', font: '14px/1 "Segoe UI Emoji",sans-serif', cursor: 'pointer',
     'pointer-events': 'auto', 'box-shadow': '0 1px 4px rgba(0,0,0,.35)',
   });
-  pwBubble.textContent = pwState.locked ? '🔒' : '🔑';
+  pwBubble.textContent = pwState.warn ? '⚠️' : pwState.locked ? '🔒' : '🔑';
   pwBubble.title = pwState.locked ? 'Jam Browser 계정이 잠겨 있어요 (잠금을 풀면 저장된 로그인을 쓸 수 있어요)' : `저장된 로그인 ${n}개`;
+  if (pwState.warn) {
+    css(pwBubble, { background: '#ffd43b' });
+    pwBubble.title = `주의: 저장한 로그인 사이트 ${pwState.warn} 와 비슷한 다른 주소예요. 피싱일 수 있어요 (자동 입력 안 함)`;
+  }
   pwBubble.addEventListener('mousedown', (e) => e.preventDefault(), true);
   pwBubble.addEventListener('click', (e) => {
-    if (!e.isTrusted || pwState.locked) return;
+    if (!e.isTrusted || pwState.locked || pwState.warn) return;
     e.preventDefault();
     e.stopPropagation();
     showPwMenu();
@@ -829,7 +833,7 @@ document.addEventListener('mousedown', (e) => {
 }, true);
 
 ipcRenderer.on('pw:available', (_e, s) => {
-  pwState = { unlocked: !!s.unlocked, locked: !!s.locked, accounts: Array.isArray(s.accounts) ? s.accounts : [] };
+  pwState = { unlocked: !!s.unlocked, locked: !!s.locked, accounts: Array.isArray(s.accounts) ? s.accounts : [], warn: typeof s.warn === 'string' ? s.warn : null };
   showPwBubble();
 });
 ipcRenderer.on('pw:fill', (_e, { username, password }) => {

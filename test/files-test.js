@@ -97,7 +97,7 @@ function client(port) {
   ok('jamfile:// 주소 형식 (파일 ID 16자, 소문자 · 숫자)');
 
   // ---------- 서버 ----------
-  const server = await createJamServer({ port: 0, localCreateOnly: true });
+  const server = await createJamServer({ port: 0, localCreateOnly: true, limits: { fileMaxCount: 10, fileRoomMax: 200 * 1024 * 1024 } }); // 한도 동작 확인용으로 작게
   const secret = newSecret();
   const host = client(server.port);
   await host.opened;
@@ -117,10 +117,10 @@ function client(port) {
   await host.none('file');
   // 형식 검사
   host.send({ ...offer, kind: 'exe' });
-  host.send({ ...offer, size: 60 * 1024 * 1024 });
+  host.send({ ...offer, size: 3 * 1024 * 1024 * 1024 });
   host.send({ ...offer, fid: 'BAD' });
   await g.none('file');
-  ok('파일 공유는 호스트만 · 허용 형식(PDF · HTML · 이미지 · 텍스트 · SWF)만 · 50MB 까지');
+  ok('파일 공유는 호스트만 · 허용 형식(PDF · HTML · 이미지 · 텍스트 · SWF)만 · 크기 한도(설정, 기본 2GB) 안에서만');
 
   host.send(offer);
   const f1 = await g.next('file');
@@ -200,7 +200,7 @@ function client(port) {
   host.send({ ...offer, fid: 'limitoverflow000', size: small.length, sha: sha(small), kind: 'text' });
   const lim = await host.next('error', (m) => m.code === 'file-limit');
   assert.ok(lim.message.includes('10개'));
-  ok('한 Jam 에 공유 파일은 10개 · 합계 200MB 까지');
+  ok('공유 파일 개수 · 합계 한도는 설정값대로 (테스트: 10개 · 200MB)');
 
   for (const c of [host, g, late]) c.ws.close();
   await server.close();

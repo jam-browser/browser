@@ -11,6 +11,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ======================================================================
 // 유틸
 // ======================================================================
+// 세부 설정 값 (prefs.js 가 아직 안 붙었으면 기본값)
+const pref = (k) => (window.prefs ? window.prefs.get(k) : JamPrefs.DEFAULTS[k]);
+
 function isWebUrl(u) {
   try {
     const p = new URL(u);
@@ -173,6 +176,7 @@ function createTab(url = ui.newTabUrl(), { activate = true } = {}) {
 
   const tab = { id: ++tabSeq, webview, url, title: '새 탭', favicon: null, loading: true, ready: false };
   wireWebview(tab);
+  if (pref('muteNewTabs')) setTabMuted(tab, true); // 설정: 새 탭은 음소거로 시작
   tabs.push(tab);
   $('#views').append(webview);
   if (activate) activateTab(tab);
@@ -994,6 +998,7 @@ function enterJam(ws, welcome, tab, keys) {
   jam.you = welcome.you;
   jam.room = welcome.room;
   jam.tab = tab;
+  if (pref('muteJamTab')) setTabMuted(tab, true); // 설정: Jam 탭은 음소거로 시작
   jam.lastSyncedUrl = tab.url;
   jam.myView = null;
   jam.loginWait = null;

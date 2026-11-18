@@ -10,7 +10,10 @@ const { startRelayTunnel } = require('../server/relay-tunnel');
 const { startBeacon, startScanner } = require('../server/nearby');
 const { pairWithHost } = require('../server/pair-client');
 const { isPrivateIp } = require('../server/jam-server');
-const { sameSite } = require('../shared/site');
+const { sameSite, httpsUpgrade } = require('../shared/site');
+// HTTPS 우선: 이 탭에서 https 로 바꿔 연 주소 (실패하면 원래 http 로) · https 가 안 되는 사이트
+const httpsTried = new Map(); // webContentsId → { https, http, host }
+const httpOnlyHosts = new Set();
 const { setupVault } = require('./vault');
 const { setupJamFiles, SCHEME: JAMFILE } = require('./jamfiles');
 
@@ -26,6 +29,10 @@ let vaultApi = null;
 let beacon = null; // 근처 알림 (호스트일 때)
 let scanner = null; // 근처 Jam 찾기
 let nearbyVisible = true;
+// 세부 설정 (앱 화면에서 받음, shared/prefs.js). 받기 전에는 기본값
+const PREFS = require('../shared/prefs');
+let prefs = PREFS.clean({});
+let jamFilesApi = null;
 let nearbyList = [];
 let pairing = null; // 진행 중인 근처 페어링
 let pendingCapture = null; // 화면 미러링: 앱이 방금 요청한 탭 캡처 { wcId, until }
@@ -150,6 +157,22 @@ app.on('web-contents-created', (_e, contents) => {
   });
 
   if (contents.getType() === 'webview') {
+    // HTTPS 우선: https 로 바꿔 연 주소가 실패하면 그 사이트는 http 로 (이 앱을 켜 둔 동안 기억)
+    const httpsFallback = (_e, code, _desc, url, isMainFrame) => {
+      if (isMainFrame === false || code === -3) return; // -3 = 사용자가 멈춤 · 다른 이동
+      const t = httpsTried.get(contents.id);
+      if (!t || !url || !url.startsWith('https://') || new URL(url).hostname !== t.host) return;
+      httpsTried.delete(contents.id);
+      httpOnlyHosts.add(t.host);
+      console.log(`[https-first] ${t.host} 는 https 가 안 돼서 http 로 열어요 (${code})`);
+      contents.loadURL(t.http).catch(() => {});
+    };
+    contents.on('did-fail-provisional-load', httpsFallback);
+    contents.on('did-fail-load', httpsFallback);
+    contents.on('did-navigate', (_e, url) => {
+      const t = httpsTried.get(contents.id);
+      if (t && !String(url).startsWith(`https://${t.host}`)) httpsTried.delete(contents.id);
+    });
     // 새 창(target=_blank, window.open)은 새 탭(개인 탭)으로 연다
     contents.setWindowOpenHandler(({ url }) => {
       const host = contents.hostWebContents;
@@ -200,6 +223,7 @@ ipcMain.handle('jam:host-start', async (_e, opts = {}) => {
       localCreateOnly: true, // 내 PC 호스트: 방은 이 앱만 만들 수 있다 (중앙 서버 없음)
       relayKey,
       log: (m) => console.log(`[jam] ${m}`),
+      limits: PREFS.serverLimits(prefs),
     });
   }
   let relay = null;
@@ -295,7 +319,6 @@ ipcMain.handle('mirror:end', (e) => {
 const MIRROR = require('../shared/mirror');
 let mirrorWcId = null;
 const remoteMarks = new Map(); // wcId → Map(출처 → 마지막 원격 입력 시각)
-const REMOTE_TAINT_MS = 30 * 60e3;
 const probes = new Map();
 let probeSeq = 0;
 const originOfUrl = (u) => {
@@ -312,7 +335,9 @@ function markRemote(wc) {
   m.set(originOfUrl(wc.getURL()), Date.now());
 }
 /** 이 탭 · 이 사이트에 최근 ms 안에 다른 컴퓨터의 입력이 들어왔나 (비밀번호 저장 제안 · 자동 입력을 막는 데 씀) */
-function remoteTouched(wcId, url, ms = REMOTE_TAINT_MS) {
+function remoteTouched(wcId, url, ms) {
+  if (ms === undefined) ms = prefs.noPwSaveAfterRemoteMin * 60e3; // 설정: 원격 조작 뒤 비밀번호 저장 안 묻는 시간 (0 = 끔)
+  if (!ms) return false;
   const m = remoteMarks.get(wcId);
   const at = m && m.get(originOfUrl(url));
   return !!at && Date.now() - at < ms;
@@ -371,6 +396,9 @@ ipcMain.handle('mirror:input', async (e, ev, code) => {
   if (out.type !== 'mouseMove' && out.type !== 'mouseWheel') {
     const d = await probeTab(wc, { kind: out.type, x: out.x, y: out.y });
     const v = MIRROR.remoteVerdict(d, out.type, typeof code === 'string' ? code : '');
+    // 설정으로 끈 보호는 통과 (🔑 비밀번호 뱅크 · 확인 못 한 곳은 항상 막음)
+    if (!v.ok && !prefs.remoteBlockSensitive && ['button', 'login', 'frame'].includes(v.reason)) v.ok = true;
+    if (!v.ok && !prefs.remoteBlockSecret && v.reason === 'secret') v.ok = true;
     if (!v.ok) {
       if (!wc.isDestroyed()) wc.send('mirror:disarm');
       return v;
@@ -386,7 +414,7 @@ ipcMain.handle('mirror:input', async (e, ev, code) => {
 function updateBeacon() {
   // 호스트 서버가 켜져 있는 동안 (방이 생기면 그때부터 알림에 실림)
   const hosting = !!jamServer;
-  if (!hosting || !nearbyVisible) {
+  if (!hosting || !nearbyVisible || !prefs.nearbyAnnounce) {
     if (beacon) beacon.close();
     beacon = null;
     return;
@@ -396,6 +424,7 @@ function updateBeacon() {
     id: beaconId,
     port: jamServer.port,
     appVersion: app.getVersion(),
+    intervalMs: prefs.nearbyIntervalSec * 1000,
     log: (m) => console.log(`[nearby] ${m}`),
     getRooms: () => {
       if (!jamServer || !nearbyVisible) return [];
@@ -409,7 +438,7 @@ function updateBeacon() {
   });
 }
 function startNearbyScanner() {
-  if (scanner) return;
+  if (scanner || !prefs.nearbyScan) return;
   scanner = startScanner({
     log: (m) => console.log(`[nearby] ${m}`),
     onChange: (list) => {
@@ -419,6 +448,32 @@ function startNearbyScanner() {
   });
 }
 ipcMain.handle('nearby:list', (e) => (fromApp(e) ? nearbyList : []));
+
+// ---------- 세부 설정: 앱 화면이 시작할 때 · 바꿀 때마다 보냄 → 바로 적용 ----------
+function applyPrefs(prev) {
+  if (jamServer) jamServer.setLimits(PREFS.serverLimits(prefs));
+  if (jamFilesApi) jamFilesApi.setLimits(prefs);
+  // 근처 알림: 끄거나 간격이 바뀌면 다시 시작
+  if (beacon && (!prefs.nearbyAnnounce || (prev && prev.nearbyIntervalSec !== prefs.nearbyIntervalSec))) {
+    beacon.close();
+    beacon = null;
+  }
+  updateBeacon();
+  if (!prefs.nearbyScan && scanner) {
+    scanner.close();
+    scanner = null;
+    nearbyList = [];
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('nearby', nearbyList);
+  } else startNearbyScanner();
+}
+ipcMain.handle('prefs:set', (e, v) => {
+  if (!fromApp(e)) return null;
+  const prev = prefs;
+  prefs = PREFS.clean(v);
+  applyPrefs(prev);
+  return prefs;
+});
+ipcMain.handle('prefs:server-limits', (e) => (fromApp(e) && jamServer ? jamServer.limits() : null)); // 테스트 · 확인용
 ipcMain.handle('nearby:visible', (e, on) => {
   if (!fromApp(e)) return;
   nearbyVisible = !!on;
@@ -816,8 +871,27 @@ app.whenReady().then(() => {
   setupExtensions(ses);
   // 브라우저 계정 · 비밀번호 뱅크 · 친구 (모두 이 PC 안에서만, 메인 프로세스가 키를 들고 있음)
   // 같이 보는 파일 (메모리에만, jamfile:// 로 보여 줌)
-  setupJamFiles({ ipcMain, dialog, getWindow: () => mainWindow, getSession: () => ses, appDir: path.join(__dirname, '..') }).attach(ses);
-  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched });
+  jamFilesApi = setupJamFiles({ ipcMain, dialog, getWindow: () => mainWindow, getSession: () => ses, appDir: path.join(__dirname, '..') });
+  jamFilesApi.attach(ses);
+  jamFilesApi.setLimits(prefs);
+  // 요청 검사는 하나로: jamfile:// 를 웹페이지가 불러오는 것 막기 + HTTPS 우선
+  ses.webRequest.onBeforeRequest({ urls: ['jamfile://*/*', 'http://*/*'] }, (d, cb) => {
+    if (d.url.startsWith('jamfile:')) return cb({ cancel: jamFilesApi.blockedRequest(d) });
+    if (prefs.httpsFirst && d.resourceType === 'mainFrame' && d.method === 'GET') {
+      const up = httpsUpgrade(d.url);
+      let host = '';
+      try {
+        host = new URL(d.url).hostname;
+      } catch {}
+      const wc = d.webContentsId ? webContents.fromId(d.webContentsId) : null;
+      if (up && host && !httpOnlyHosts.has(host) && wc && wc.getType() === 'webview') {
+        httpsTried.set(wc.id, { https: up, http: d.url, host });
+        return cb({ redirectURL: up });
+      }
+    }
+    cb({});
+  });
+  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched, getPrefs: () => prefs });
   createWindow();
   startNearbyScanner();
   setupAutoUpdate();

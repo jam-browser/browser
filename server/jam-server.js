@@ -22,24 +22,18 @@ const MIRROR = require('../shared/mirror');
 const ACCESS = new Set(['approval', 'friends', 'open']);
 const cleanAllow = (list) => new Set((Array.isArray(list) ? list : []).filter((x) => /^[A-Z0-9]{24}$/.test(String(x))).slice(0, 500));
 
-const MAX_FAILURES = 8; // 잘못된 초대 코드 8번 → 10분 차단
 const MAX_CONNS_PER_IP = 10;
-const MAX_PENDING = 5;
 const AUTH_TIMEOUT = 10000; // 접속 후 10초 안에 인증 못 하면 끊음
-const APPROVAL_TIMEOUT = 120000; // 호스트 승인 대기 2분
-const RESUME_TTL = 5 * 60e3; // 끊긴 뒤 5분 안에는 승인 없이 복귀
 const RATE_PER_SEC = 100;
 const RATE_BURST = 200;
 // 화면 미러링 영상처럼 큰 메시지(4KB 넘음)는 개수 대신 바이트로 제한 (연결 하나당 초당 4MB, 순간 8MB)
 const BIG_MSG = 4096;
 const BYTE_RATE = 4 * 1024 * 1024;
 const BYTE_BURST = 8 * 1024 * 1024;
-const MIRROR_BACKLOG = 3 * 1024 * 1024; // 받는 쪽에 이만큼 쌓이면 영상 조각을 건너뛰고 다음 키프레임부터
+const MIRROR_BACKLOG = 8 * 1024 * 1024; // 받는 쪽에 이만큼 쌓이면 영상 조각을 건너뛰고 다음 키프레임부터
 // 미러링하는 사람은 영상을 올려야 하니 한도를 더 줌 (최대 20Mbps 영상 + base64 · 암호화 덧붙임)
-const OWNER_BYTE_RATE = 6 * 1024 * 1024;
-const OWNER_BYTE_BURST = 12 * 1024 * 1024;
-// 세션(방) 하나가 영상으로 내보내는 총량 한도: 200Mbps (참여자 모두 합쳐서)
-const ROOM_MIRROR_RATE = (200 * 1000 * 1000) / 8;
+const OWNER_BYTE_RATE = 64 * 1024 * 1024;
+const OWNER_BYTE_BURST = 128 * 1024 * 1024;
 const PAIR_TIMEOUT = 30000; // 페어링: 키 교환 뒤 요청까지
 const TICKET_TTL = 60e3; // 페어링으로 받은 일회용 입장권 유효 시간
 
@@ -56,8 +50,6 @@ function isPrivateIp(raw) {
 const COLORS = ['#2ee6a6', '#ff6b6b', '#4dabf7', '#ffd43b', '#cc5de8', '#ff922b', '#20c997', '#f06595'];
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const REACTIONS = ['👍', '😂', '😮', '❤️', '🔥', '👏'];
-const MAX_MEMBERS = 16;
-const MAX_QUEUE = 50;
 
 function isWebUrl(u) {
   if (typeof u !== 'string' || u.length > 4096) return false;
@@ -74,11 +66,7 @@ const isJamFileUrl = (u) => typeof u === 'string' && u.length < 2048 && /^jamfil
 const fidOf = (u) => (isJamFileUrl(u) ? u.slice(10, 26) : null);
 const isShareable = (u) => (isWebUrl(u) && !isSensitiveUrl(u)) || isJamFileUrl(u);
 const FILE_PIECE = 32 * 1024;
-const FILE_MAX = 50 * 1024 * 1024;
-const FILE_ROOM_MAX = 200 * 1024 * 1024;
-const FILE_MAX_COUNT = 10;
 const FILE_KINDS = new Set(['pdf', 'html', 'image', 'text', 'swf']);
-const FILE_PER_TICK = 2; // 20ms 마다 2조각 → 참여자 1명당 초당 100조각(약 3.2MB/s), 중계 서버의 초당 200개 한도 안
 const FILE_BACKLOG = 512 * 1024;
 
 function ratio(n) {
@@ -122,7 +110,42 @@ function makeCode(rooms) {
  * @param relayKey        중계 터널(server/relay-tunnel.js)만 아는 값. 이 값을 함께 보낸 같은 PC 연결은
  *                        x-jam-relay-ip 헤더의 손님 IP 를 믿고, 차단·표시에 그 IP 를 쓴다
  */
-function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = false, relayKey = null, log = () => {}, mirrorRate = ROOM_MIRROR_RATE } = {}) {
+// 설정으로 바꿀 수 있는 한도 (shared/prefs.js 의 serverLimits 와 같은 이름). 기본은 넉넉하게
+const DEFAULT_LIMITS = {
+  maxMembers: 64,
+  maxPending: 10,
+  approvalMs: 120000,
+  resumeMs: 5 * 60e3,
+  maxQueue: 200,
+  maxFailures: 8,
+  blockMs: 10 * 60e3,
+  mirrorRate: 0, // 한 Jam 영상 합계 (초당 바이트), 0 = 제한 없음
+  fileMax: 2048 * 1024 * 1024,
+  fileRoomMax: 8192 * 1024 * 1024,
+  fileMaxCount: 100,
+  filePerTick: 4,
+};
+const num = (v, d, lo, hi) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+function cleanLimits(o = {}) {
+  const d = DEFAULT_LIMITS;
+  return {
+    maxMembers: num(o.maxMembers, d.maxMembers, 2, 64),
+    maxPending: num(o.maxPending, d.maxPending, 1, 50),
+    approvalMs: num(o.approvalMs, d.approvalMs, 5000, 3600e3),
+    resumeMs: num(o.resumeMs, d.resumeMs, 0, 24 * 3600e3),
+    maxQueue: num(o.maxQueue, d.maxQueue, 1, 5000),
+    maxFailures: num(o.maxFailures, d.maxFailures, 1, 1000),
+    blockMs: num(o.blockMs, d.blockMs, 1000, 7 * 24 * 3600e3),
+    mirrorRate: num(o.mirrorRate, d.mirrorRate, 0, 1e12),
+    fileMax: num(o.fileMax, d.fileMax, 1024, 64 * 1024 ** 3),
+    fileRoomMax: num(o.fileRoomMax, d.fileRoomMax, 1024, 1024 ** 4),
+    fileMaxCount: num(o.fileMaxCount, d.fileMaxCount, 1, 10000),
+    filePerTick: num(o.filePerTick, d.filePerTick, 1, 64),
+  };
+}
+
+function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = false, relayKey = null, log = () => {}, mirrorRate, limits = {} } = {}) {
+  const L = cleanLimits({ ...limits, ...(mirrorRate !== undefined ? { mirrorRate } : {}) });
   const rooms = new Map();
   let nextId = 1;
   let nextItemId = 1;
@@ -151,7 +174,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     let f = failures.get(ip);
     if (!f || now - f.first > 10 * 60e3) f = { n: 0, first: now, blockedUntil: 0 };
     f.n++;
-    if (f.n >= MAX_FAILURES) f.blockedUntil = now + 10 * 60e3; // 10분 차단
+    if (f.n >= L.maxFailures) f.blockedUntil = now + L.blockMs; // 설정한 시간 동안 차단
     failures.set(ip, f);
   }
 
@@ -216,7 +239,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         const q = m.fileQ;
         if (!q || !q.length) continue;
         busy = true;
-        for (let k = 0; k < FILE_PER_TICK && q.length; k++) {
+        for (let k = 0; k < L.filePerTick && q.length; k++) {
           if (m.ws.readyState !== 1) {
             q.length = 0;
             break;
@@ -274,8 +297,10 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
   // 세션 영상 한도 (200Mbps) — 넘으면 그 참여자는 다음 키프레임까지 건너뜀
   function roomBudget(room, size) {
     const now = Date.now();
-    const b = room.mbudget || (room.mbudget = { bytes: mirrorRate, at: now });
-    b.bytes = Math.min(mirrorRate, b.bytes + ((now - b.at) / 1000) * mirrorRate); // 순간 한도도 1초 분량
+    const rate = L.mirrorRate;
+    if (!rate) return true; // 제한 없음
+    const b = room.mbudget || (room.mbudget = { bytes: rate, at: now });
+    b.bytes = Math.min(rate, b.bytes + ((now - b.at) / 1000) * rate); // 순간 한도도 1초 분량
     b.at = now;
     if (b.bytes < size) return false;
     b.bytes -= size;
@@ -299,7 +324,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         bad = bad || !!m.mbad;
       }
     }
-    send(owner.ws, { type: 'mstat', viewers, backlog, late, bad, drops: st.drops, out: Math.round((st.out * 1000) / (now - st.at)), cap: mirrorRate });
+    send(owner.ws, { type: 'mstat', viewers, backlog, late, bad, drops: st.drops, out: Math.round((st.out * 1000) / (now - st.at)), cap: L.mirrorRate });
     room.mstat = { at: now, out: 0, drops: 0 };
   }
   function endMirror(room) {
@@ -441,7 +466,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       }
       ws.keys = target.keys;
       clearTimeout(authTimer);
-      if (target.members.size + target.pending.size >= MAX_MEMBERS) return deny('full', 'Jam 인원이 가득 찼어요.');
+      if (target.members.size + target.pending.size >= L.maxMembers) return deny('full', 'Jam 인원이 가득 찼어요.');
 
       // 방금 끊겼던 사람(재접속)은 승인 없이 복귀
       const resume = resumeToken && target.resumes.get(resumeToken);
@@ -469,7 +494,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     }
 
     function requestApproval(target, name, who, extra, onAccept) {
-      if (target.pending.size >= MAX_PENDING) return deny('busy', '참여 요청이 너무 많아요. 잠시 후 다시 시도하세요.');
+      if (target.pending.size >= L.maxPending) return deny('busy', '참여 요청이 너무 많아요. 잠시 후 다시 시도하세요.');
       const entry = {
         id: `p${nextId++}`,
         name,
@@ -491,7 +516,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         const host = hostOf(target);
         if (host) send(host.ws, { type: 'join-cancel', id: entry.id });
         entry.reject('호스트가 응답하지 않아 참여 요청이 취소됐어요.');
-      }, APPROVAL_TIMEOUT);
+      }, L.approvalMs);
       target.pending.set(entry.id, entry);
       pending = { room: target, entry };
       send(ws, { type: 'pending' });
@@ -532,7 +557,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         who.friend = target.allow.has(who.fp);
       }
       const name = cleanText(inner.name, 24) || '익명';
-      if (target.members.size + target.pending.size >= MAX_MEMBERS) return deny('full', 'Jam 인원이 가득 찼어요.');
+      if (target.members.size + target.pending.size >= L.maxMembers) return deny('full', 'Jam 인원이 가득 찼어요.');
       // 수락 → 이 연결의 페어링 키로 초대 비밀키 + 일회용 입장권을 암호화해서 건넨다
       const grant = () => {
         const ticket = crypto.randomBytes(24).toString('base64url');
@@ -567,7 +592,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       r.members.delete(me.id);
       if (r.mirror && r.mirror.by === me.id) endMirror(r); // 미러링하던 사람이 나가면 미러링 끝
       room = null;
-      if (!me.kicked) r.resumes.set(me.resume, { expires: Date.now() + RESUME_TTL });
+      if (!me.kicked && L.resumeMs > 0) r.resumes.set(me.resume, { expires: Date.now() + L.resumeMs });
       if (r.members.size === 0) {
         for (const p of r.pending.values()) {
           clearTimeout(p.timer);
@@ -664,7 +689,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           const fr = Number(msg.f);
           const i = Number(msg.i);
           const n = Number(msg.n);
-          if (!Number.isInteger(fr) || fr < 0 || !Number.isInteger(n) || n < 1 || n > 64 || !Number.isInteger(i) || i < 0 || i >= n) return;
+          if (!Number.isInteger(fr) || fr < 0 || !Number.isInteger(n) || n < 1 || n > 256 || !Number.isInteger(i) || i < 0 || i >= n) return;
           if (typeof msg.d !== 'string' || msg.d.length > 45000 || !Number.isFinite(Number(msg.ts))) return;
           const key = !!msg.k;
           const out = { type: 'mv', sid: mir.sid, f: fr, k: key, i, n, ts: Number(msg.ts), d: msg.d };
@@ -788,12 +813,12 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           const size = Number(msg.size);
           const count = Number(msg.count);
           if (!FID_RE.test(fid) || room.files.has(fid) || !FILE_KINDS.has(msg.kind)) return;
-          if (!Number.isInteger(size) || size < 8 || size > FILE_MAX || !/^[0-9a-f]{64}$/.test(String(msg.sha))) return;
+          if (!Number.isInteger(size) || size < 8 || size > L.fileMax || !/^[0-9a-f]{64}$/.test(String(msg.sha))) return;
           if (!Number.isInteger(count) || count < 1 || count > 500) return;
           let total = size;
           for (const f of room.files.values()) total += f.meta.size;
-          if (room.files.size >= FILE_MAX_COUNT || total > FILE_ROOM_MAX) {
-            return send(ws, { type: 'error', code: 'file-limit', message: `공유 파일은 한 Jam 에 ${FILE_MAX_COUNT}개 · 합계 200MB 까지예요. 안 쓰는 파일을 지워 주세요.` });
+          if (room.files.size >= L.fileMaxCount || total > L.fileRoomMax) {
+            return send(ws, { type: 'error', code: 'file-limit', message: `공유 파일은 한 Jam 에 ${L.fileMaxCount}개 · 합계 ${Math.round(L.fileRoomMax / 1024 / 1024)}MB 까지예요 (설정 → 같이 보는 파일). 안 쓰는 파일을 지워 주세요.` });
           }
           const meta = { fid, name: cleanText(msg.name, 120) || 'file', kind: msg.kind, size, sha: msg.sha, entry: cleanText(msg.entry, 300), count, by: me.id, net: msg.kind === 'html' && msg.net === true };
           const n = Math.ceil(size / FILE_PIECE);
@@ -931,7 +956,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         }
         case 'queue:add': {
           if (!isShareable(msg.url)) return;
-          if (room.queue.length >= MAX_QUEUE)
+          if (room.queue.length >= L.maxQueue)
             return send(ws, { type: 'error', code: 'queue-full', message: '대기열이 가득 찼어요.' });
           const item = {
             id: String(nextItemId++),
@@ -1087,13 +1112,19 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     server.on('listening', () => {
       server.removeAllListeners('error');
       server.on('error', (e) => log(`server error: ${e.message}`));
-      resolve({ port: server.address().port, close, rooms });
+      resolve({
+        port: server.address().port,
+        close,
+        rooms,
+        limits: () => ({ ...L }),
+        setLimits: (o) => Object.assign(L, cleanLimits({ ...L, ...o })), // 설정을 바꾸면 바로 적용
+      });
     });
     server.listen(port, host);
   });
 }
 
-module.exports = { createJamServer, isWebUrl, isPrivateIp, isJamFileUrl };
+module.exports = { createJamServer, isWebUrl, isPrivateIp, isJamFileUrl, DEFAULT_LIMITS, cleanLimits };
 
 if (require.main === module) {
   const port = Number(process.argv[2] || process.env.PORT || 3030);

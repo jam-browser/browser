@@ -17,6 +17,9 @@ contextBridge.exposeInMainWorld('jamApp', {
   mirrorSourceId: (wcId) => ipcRenderer.invoke('mirror:source-id', wcId),
   mirrorInput: (ev, code) => ipcRenderer.invoke('mirror:input', ev, code),
   mirrorEnd: () => ipcRenderer.invoke('mirror:end'),
+  // 세부 설정
+  setPrefs: (v) => ipcRenderer.invoke('prefs:set', v),
+  serverLimits: () => ipcRenderer.invoke('prefs:server-limits'),
   // 같이 보는 파일
   filePick: () => ipcRenderer.invoke('file:pick'),
   fileFromPath: (p, withFolder, net) => ipcRenderer.invoke('file:from-path', p, withFolder, net),
@@ -90,4 +93,5 @@ contextBridge.exposeInMainWorld('jamVault', {
   discardCapture: (captureId) => ipcRenderer.invoke('pw:discard-capture', { captureId }),
   onLocked: (cb) => ipcRenderer.on('vault:locked', (_e, info) => cb(info)),
   onOfferSave: (cb) => ipcRenderer.on('pw:offer-save', (_e, info) => cb(info)),
+  onLookalike: (cb) => ipcRenderer.on('pw:lookalike', (_e, info) => cb(info)),
 });

@@ -17,13 +17,17 @@ const mirror = (() => {
   const M = JamMirror;
   const PIECE = 32 * 1024;
   const TYPES = { mv: 'mouseMove', dn: 'mouseDown', up: 'mouseUp', wh: 'mouseWheel' };
-  const FPS = [30, 24, 15, 10, 5];
-  const FPS10 = FPS.indexOf(10);
-  const RATE_MIN = 2e6;
-  const RATE_MAX = 20e6;
-  const RATE_START = 8e6;
+  // 값은 설정(화면 미러링)에서: 최대 해상도 · 초당 장수 · 비트레이트 · 영상 형식 · 자동 조절
+  const FPS_ALL = [60, 30, 24, 15, 10, 5];
+  const FPS10 = FPS_ALL.indexOf(10);
+  const RATE_MIN = () => pref('mirrorMinMbps') * 1e6;
+  const RATE_MAX = () => Math.max(RATE_MIN(), pref('mirrorMaxMbps') * 1e6);
+  const RATE_START = () => Math.min(RATE_MAX(), Math.max(RATE_MIN(), pref('mirrorStartMbps') * 1e6));
+  const FPS_TOP = () => Math.max(0, FPS_ALL.indexOf(Number(pref('mirrorMaxFps')))); // 설정한 최대 초당 장수의 자리
+  const FPS = FPS_ALL;
   const OVERHEAD = 1.4; // base64 + 암호화 + JSON 덧붙임
-  const KEY_EVERY = 4000; // ms 마다 키프레임
+  const KEY_EVERY = () => pref('mirrorKeySec') * 1000; // ms 마다 키프레임
+  const RES = { 720: [1280, 720], 1080: [1920, 1080], 1440: [2560, 1440], native: [3840, 2160] };
   const PAUSE_TEXT = {
     typing: '⌨ 호스트가 입력 중이라 화면을 잠시 멈췄어요',
     secret: '🔒 호스트가 비밀 입력 칸에 있어서 화면을 멈췄어요 · 키 입력도 막혀요',
@@ -51,12 +55,14 @@ const mirror = (() => {
 
   // 하드웨어 H.264 인코더가 있으면 그걸로 (CPU 부담 적음), 없으면 VP8
   async function pickCodec(w, h) {
-    const base = { width: w, height: h, bitrate: RATE_START, framerate: 24, latencyMode: 'realtime' };
+    const base = { width: w, height: h, bitrate: RATE_START(), framerate: 30, latencyMode: 'realtime' };
+    // 4K 까지 되도록 H.264 레벨 5.1 (안 되면 4.0 → VP8)
     const tries = [
+      { codec: 'avc1.640033', avc: { format: 'annexb' }, hardwareAcceleration: 'prefer-hardware' },
       { codec: 'avc1.640028', avc: { format: 'annexb' }, hardwareAcceleration: 'prefer-hardware' },
       { codec: 'vp8' },
     ];
-    if (window.__mirrorCodec === 'vp8') tries.shift();
+    if (window.__mirrorCodec === 'vp8' || pref('mirrorCodec') === 'vp8') tries.splice(0, 2);
     for (const c of tries) {
       try {
         const e = await VideoEncoder.isConfigSupported({ ...base, ...c });
@@ -74,16 +80,22 @@ const mirror = (() => {
     if (!window.__mirrorNoConfirm && !confirm('지금 탭의 화면을 Jam 참여자에게 영상으로 보여 줄까요?\n\n· 이 탭에 로그인한 화면이 그대로 보여요\n· 다른 탭 · 앱 화면 · 바탕화면은 보이지 않아요\n· 소리는 보내지 않아요\n· 글자 칸에 입력하는 동안 · 비밀번호 칸 · 로그인/결제 화면에서는 영상이 잠시 멈춰요')) return;
     try {
       const id = await jamApp.mirrorSourceId(tab.webview.getWebContentsId());
+      // 탭의 실제 크기(화면 배율 포함)로 잡고, 설정한 최대 해상도를 넘으면 비율을 지켜 줄임 (작은 탭을 4K 로 늘려 보내지 않게)
+      const dpr = window.devicePixelRatio || 1;
+      const [cw, ch] = RES[pref('mirrorMaxRes')] || RES.native;
+      const tw = Math.max(320, Math.round(tab.webview.clientWidth * dpr));
+      const th = Math.max(180, Math.round(tab.webview.clientHeight * dpr));
+      const fit = Math.min(1, cw / tw, ch / th);
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
-        video: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: id, maxWidth: 1920, maxHeight: 1080, maxFrameRate: 30 } },
+        video: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: id, maxWidth: Math.round(tw * fit) & ~1, maxHeight: Math.round(th * fit) & ~1, maxFrameRate: Number(pref('mirrorMaxFps')) } },
       });
       const track = stream.getVideoTracks()[0];
       const s = track.getSettings();
       const codec = await pickCodec((s.width || 1280) & ~1, (s.height || 720) & ~1);
       const h = {
         sid: randomId(), tab, stream, track, codec, seq: 0, needKey: true, startUrl: tab.url, encoder: null, w: 0, h: 0, frames: 0, sent: 0,
-        q: { fpsI: 1, rate: RATE_START, scale: 1, good: 0, lastChange: 0, cap: RATE_MAX },
+        q: { fpsI: FPS_TOP(), rate: RATE_START(), scale: 1, good: 0, lastChange: 0, cap: RATE_MAX() },
         lastEncTs: -1e12, lastKeyAt: 0, lastFrame: null, tsOffset: 0, localDrops: 0, reconf: false,
         paused: null, secret: false, focus: null, typingUntil: 0, stat: null, kickTimer: null, typeTimer: null, canvas: null,
         lastBlock: new Map(),
@@ -167,7 +179,7 @@ const mirror = (() => {
       input = new VideoFrame(h.canvas, { timestamp: frame.timestamp });
     }
     const now = performance.now();
-    const key = h.needKey || now - h.lastKeyAt > KEY_EVERY;
+    const key = h.needKey || now - h.lastKeyAt > KEY_EVERY();
     if (key) h.lastKeyAt = now;
     h.needKey = false;
     try {
@@ -227,7 +239,7 @@ const mirror = (() => {
     chunk.copyTo(buf);
     const f = h.seq++;
     const n = Math.max(1, Math.ceil(buf.length / PIECE));
-    if (n > 64) return void (h.needKey = true);
+    if (n > 256) return void (h.needKey = true);
     const k = chunk.type === 'key';
     for (let i = 0; i < n; i++) {
       const m = { type: 'mv', sid: h.sid, f, k, i, n, ts: chunk.timestamp, d: b64(buf.subarray(i * PIECE, (i + 1) * PIECE)) };
@@ -259,7 +271,9 @@ const mirror = (() => {
     const now = performance.now();
     h.stat = st;
     const viewers = Math.max(1, Number(st.viewers) || 1);
-    q.cap = Math.max(RATE_MIN, Math.min(RATE_MAX, ((Number(st.cap) || 25e6) * 8 * 0.9) / viewers / OVERHEAD));
+    const sessionCap = Number(st.cap) > 0 ? (Number(st.cap) * 8 * 0.9) / viewers / OVERHEAD : Infinity; // 0 = 세션 한도 없음
+    q.cap = Math.max(RATE_MIN(), Math.min(RATE_MAX(), sessionCap));
+    if (q.fpsI < FPS_TOP()) q.fpsI = FPS_TOP(); // 설정에서 최대 초당 장수를 낮춘 경우
     let changed = false;
     if (q.rate > q.cap) {
       q.rate = q.cap; // 참여자가 늘어 세션 한도(200Mbps)에 걸림
@@ -274,23 +288,27 @@ const mirror = (() => {
     const fresh = performance.now() - (h.reconfAt || 0) < 1500; // 인코더를 막 바꾼 직후의 지연(키프레임)은 무시
     const congested = st.drops > 0 || st.backlog > 1e6 || (!fresh && st.late > 600) || h.localDrops > 0;
     h.localDrops = 0;
-    if (!h.paused && st.viewers > 0) {
+    const fpsFirst = pref('mirrorPriority') !== 'quality';
+    if (!h.paused && st.viewers > 0 && pref('mirrorAdaptive')) {
       if (congested) {
         q.good = 0;
         if (now - q.lastChange > 1500) {
-          if (q.fpsI < FPS10) q.fpsI++; // ① 초당 장수 먼저
-          else if (q.rate > RATE_MIN) q.rate = Math.max(RATE_MIN, q.rate * 0.7); // ② 화질(비트레이트)
-          else if (q.fpsI < FPS.length - 1) q.fpsI++; // ③ 5fps
+          const rmin = RATE_MIN();
+          if (fpsFirst && q.fpsI < FPS10) q.fpsI++; // ① 초당 장수 먼저 (설정: 프레임 먼저)
+          else if (q.rate > rmin) q.rate = Math.max(rmin, q.rate * 0.7); // ② 화질(비트레이트)
+          else if (q.fpsI < FPS.length - 1) q.fpsI++; // ③ 초당 장수 더 (5fps 까지)
           else if (q.scale > 0.5) q.scale -= 0.25; // ④ 해상도
           q.lastChange = now;
           changed = true;
         }
       } else if (++q.good >= 3 && now - q.lastChange > 3000) {
         let up = true;
+        const top = FPS_TOP();
         if (q.scale < 1) q.scale = Math.min(1, q.scale + 0.25);
-        else if (q.fpsI > FPS10) q.fpsI--;
+        else if (q.fpsI > Math.max(top, FPS10)) q.fpsI--;
+        else if (fpsFirst && q.rate < q.cap) q.rate = Math.min(q.cap, q.rate * 1.3);
+        else if (q.fpsI > top) q.fpsI--;
         else if (q.rate < q.cap) q.rate = Math.min(q.cap, q.rate * 1.3);
-        else if (q.fpsI > 0) q.fpsI--;
         else up = false;
         if (up) {
           q.lastChange = now;
@@ -328,9 +346,9 @@ const mirror = (() => {
   // ---- 호스트 입력 숨기기 ----
   function privacyReason(h) {
     const u = h.tab?.url || '';
-    if (isWebUrl(u) && isSensitiveUrl(u)) return 'page';
-    if (h.focus && M.isSecretField(h.focus)) return 'secret';
-    if (performance.now() < h.typingUntil) return 'typing';
+    if (pref('pauseOnSecret') && isWebUrl(u) && isSensitiveUrl(u)) return 'page';
+    if (pref('pauseOnSecret') && h.focus && M.isSecretField(h.focus)) return 'secret';
+    if (pref('pauseOnHostTyping') && performance.now() < h.typingUntil) return 'typing';
     return null;
   }
   function updatePrivacy(h) {
@@ -367,7 +385,7 @@ const mirror = (() => {
   function guard() {
     if (!host || !jam.active) return;
     updatePrivacy(host);
-    if (unsafe(host) && jam.room.members.some((m) => m.id !== jam.you.id && M.canControl(m.control))) {
+    if (pref('autoRevoke') && unsafe(host) && jam.room.members.some((m) => m.id !== jam.you.id && M.canControl(m.control))) {
       revokeAll('미러링 탭이 다른 사이트나 로그인 · 결제 화면으로 바뀌어서 조작 권한을 모두 회수했어요');
     }
   }
@@ -406,9 +424,10 @@ const mirror = (() => {
     if (!M.canControl(c)) return;
     const tab = h.tab;
     if (!tab?.webview || !tab.ready) return;
-    if (unsafe(h)) return guard();
+    if (pref('autoRevoke') && unsafe(h)) return guard();
     const wv = tab.webview;
     const evs = [];
+    if (c.k === 'full' && !pref('remoteAllowFullKeys')) c.k = 'game'; // 설정: 키보드 전체 권한 안 씀
     let code = '';
     if (msg.k === 'm') {
       if (!M.canMouse(c)) return;
@@ -744,7 +763,8 @@ const mirror = (() => {
     const c = M.normControl(m.control);
     const box = el('input', { type: 'checkbox', class: 'mirror-mouse' });
     box.checked = c.m;
-    const sel = el('select', { class: 'mirror-keys', title: '보낼 수 있는 키' }, ...M.KEYSETS.map((k) => el('option', { value: k }, M.KEY_LABEL[k])));
+    const keysets = M.KEYSETS.filter((k) => k !== 'full' || pref('remoteAllowFullKeys') || c.k === 'full');
+    const sel = el('select', { class: 'mirror-keys', title: '보낼 수 있는 키' }, ...keysets.map((k) => el('option', { value: k }, M.KEY_LABEL[k])));
     sel.value = c.k;
     const update = () => {
       const next = { m: box.checked, k: sel.value };
