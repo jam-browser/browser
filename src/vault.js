@@ -32,7 +32,10 @@ function originOf(url) {
   }
 }
 
-function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow, remoteTouched = () => false }) {
+function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow, remoteTouched = () => false, getPrefs = () => ({}) }) {
+  const SITE = require('../shared/site');
+  const { domainToUnicode } = require('url');
+  const warnedHosts = new Set();
   const dir = path.join(app.getPath('userData'), 'vault');
   const FILE = path.join(dir, 'profile.jvault');
   const SK_FILE = path.join(dir, 'secret-key.dat');
@@ -381,7 +384,20 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     if (!origin) return;
     if (!session) return e.sender.send('pw:available', { origin, unlocked: false, locked: fs.existsSync(FILE), accounts: [] });
     const accounts = session.doc.logins.filter((l) => l.origin === origin).map((l) => ({ id: l.id, username: l.username }));
-    e.sender.send('pw:available', { origin, unlocked: true, locked: false, accounts });
+    // 저장한 사이트와 비슷한 가짜 주소인지 (저장한 계정이 없는 사이트에서만): 경고 + 🔑 채우기 없음
+    let warn = null;
+    if (!accounts.length && getPrefs().lookalikeWarn !== false) {
+      try {
+        const host = domainToUnicode(new URL(origin).hostname) || new URL(origin).hostname;
+        const saved = [...new Set(session.doc.logins.map((l) => SITE.siteOf(l.origin)).filter(Boolean))];
+        warn = SITE.lookalikeOf(host, saved);
+        if (warn && !warnedHosts.has(host)) {
+          warnedHosts.add(host);
+          send('pw:lookalike', { host, like: warn });
+        }
+      } catch {}
+    }
+    e.sender.send('pw:available', { origin, unlocked: true, locked: false, accounts, warn });
   });
 
   ipcMain.on('pw:fill-request', (e, arg) => {

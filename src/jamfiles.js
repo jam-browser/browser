@@ -14,10 +14,10 @@ const fs = require('fs');
 const path = require('path');
 
 const SCHEME = 'jamfile';
-const MAX_PACK = 50 * 1024 * 1024;
-const MAX_STORE = 300 * 1024 * 1024;
-const MAX_ENTRIES = 500;
-const MAX_DEPTH = 4;
+// 한도는 설정(같이 보는 파일)에서 바꿈 — setLimits. 기본은 넉넉하게
+const LIM = { pack: 2048 * 1024 * 1024, store: 8192 * 1024 * 1024, entries: 5000, depth: 8, htmlNet: false };
+const mbText = (b) => (b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(b % 1024 ** 3 ? 1 : 0)}GB` : `${Math.round(b / 1024 / 1024)}MB`);
+const tooBig = () => new Error(`파일이 너무 커요 (최대 ${mbText(LIM.pack)}, 설정 → 같이 보는 파일)`);
 const FID_RE = /^[a-z0-9]{16}$/;
 
 const MIME = {
@@ -64,11 +64,11 @@ function validPath(p) {
 }
 /** 묶음 풀기 — 형식이 이상하면 throw */
 function unpack(buf) {
-  if (!Buffer.isBuffer(buf) || buf.length < 8 || buf.length > MAX_PACK || buf.toString('latin1', 0, 4) !== 'JFP1') throw new Error('bad pack');
+  if (!Buffer.isBuffer(buf) || buf.length < 8 || buf.length > LIM.pack || buf.toString('latin1', 0, 4) !== 'JFP1') throw new Error('bad pack');
   const hl = buf.readUInt32BE(4);
   if (hl > 512 * 1024 || 8 + hl > buf.length) throw new Error('bad head');
   const head = JSON.parse(buf.toString('utf8', 8, 8 + hl));
-  if (!head || head.v !== 1 || !Array.isArray(head.entries) || !head.entries.length || head.entries.length > MAX_ENTRIES) throw new Error('bad head');
+  if (!head || head.v !== 1 || !Array.isArray(head.entries) || !head.entries.length || head.entries.length > LIM.entries) throw new Error('bad head');
   const base = 8 + hl;
   const entries = new Map();
   for (const e of head.entries) {
@@ -80,7 +80,7 @@ function unpack(buf) {
 }
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 
-// HTML 이 있는 폴더를 묶음 (하위 폴더 MAX_DEPTH 까지, 허용 형식만)
+// HTML 이 있는 폴더를 묶음 (하위 폴더 LIM.depth 까지, 허용 형식만)
 function collectFolder(dir) {
   const out = [];
   let total = 0;
@@ -90,12 +90,12 @@ function collectFolder(dir) {
       const full = path.join(d, ent.name);
       const r = rel ? `${rel}/${ent.name}` : ent.name;
       if (ent.isDirectory()) {
-        if (depth < MAX_DEPTH) walk(full, r, depth + 1);
+        if (depth < LIM.depth) walk(full, r, depth + 1);
       } else if (ent.isFile() && BUNDLE_EXT.has(extOf(ent.name))) {
         const st = fs.statSync(full);
         total += st.size;
-        if (total > MAX_PACK) throw new Error('폴더가 너무 커요 (최대 50MB)');
-        if (out.length >= MAX_ENTRIES) throw new Error(`파일이 너무 많아요 (최대 ${MAX_ENTRIES}개)`);
+        if (total > LIM.pack) throw tooBig();
+        if (out.length >= LIM.entries) throw new Error(`파일이 너무 많아요 (최대 ${LIM.entries}개, 설정 → 같이 보는 파일)`);
         out.push({ p: r, bytes: fs.readFileSync(full) });
       }
     }
@@ -160,7 +160,7 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
     let total = 0;
     for (const r of store.values()) total += r.size;
     for (const r of [...store.values()].sort((a, b) => a.at - b.at)) {
-      if (total <= MAX_STORE || r.fid === rec.fid) continue;
+      if (total <= LIM.store || r.fid === rec.fid) continue;
       store.delete(r.fid);
       total -= r.size;
     }
@@ -185,11 +185,11 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
       buf = pack(entries, entry);
     } else {
       const st = fs.statSync(file);
-      if (st.size > MAX_PACK) throw new Error('파일이 너무 커요 (최대 50MB)');
+      if (st.size > LIM.pack) throw tooBig();
       const p = kind === 'html' ? cleanName(name) : 'file';
       buf = pack([{ p, bytes: fs.readFileSync(file) }], p);
     }
-    if (buf.length > MAX_PACK) throw new Error('파일이 너무 커요 (최대 50MB)');
+    if (buf.length > LIM.pack) throw tooBig();
     return keep(record(newFid(), name, kind, buf, net));
   }
 
@@ -219,9 +219,9 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
         cancelId: 2,
         title: 'HTML 공유',
         message: '같은 폴더에 있는 이미지 · 스타일 · 스크립트도 함께 공유할까요?',
-        detail: `${path.dirname(file)}\n(하위 폴더 ${MAX_DEPTH}단계까지, 최대 50MB · ${MAX_ENTRIES}개. 실행 파일 · 소리 · 동영상은 빼요)`,
+        detail: `${path.dirname(file)}\n(하위 폴더 ${LIM.depth}단계까지, 최대 ${mbText(LIM.pack)} · ${LIM.entries}개. 실행 파일 · 소리 · 동영상은 빼요)`,
         checkboxLabel: '인터넷 접속 허용 (https 의 이미지 · 스크립트 · API). 참여자에게 표시돼요',
-        checkboxChecked: false,
+        checkboxChecked: LIM.htmlNet,
       });
       if (c.response === 2) return null;
       withFolder = c.response === 0;
@@ -249,9 +249,9 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
       const res = await getSession().fetch(url, { redirect: 'follow' });
       if (!res.ok) return { error: `받지 못했어요 (${res.status})` };
       const len = Number(res.headers.get('content-length') || 0);
-      if (len > MAX_PACK) return { error: '파일이 너무 커요 (최대 50MB)' };
+      if (len > LIM.pack) return { error: tooBig().message };
       const bytes = Buffer.from(await res.arrayBuffer());
-      if (bytes.length > MAX_PACK) return { error: '파일이 너무 커요 (최대 50MB)' };
+      if (bytes.length > LIM.pack) return { error: tooBig().message };
       if (bytes.toString('latin1', 0, 5) !== '%PDF-') return { error: 'PDF 파일이 아니에요' };
       let name = decodeURIComponent(new URL(res.url || url).pathname.split('/').pop() || 'document.pdf');
       if (!/\.pdf$/i.test(name)) name += '.pdf';
@@ -362,23 +362,32 @@ function setupJamFiles({ ipcMain, dialog, getWindow, getSession, appDir }) {
       ses.protocol.handle(SCHEME, handle);
       // 요청한 화면(frame)의 주소로 한 번 더 막기: 일반 웹페이지 안에서 jamfile:// 를 <img> · <iframe> 등으로 불러오는 것
       // (referrer 를 안 보내는 요청도 여기서 걸림). 앱이 직접 여는 이동(mainFrame)은 그대로
-      ses.webRequest.onBeforeRequest({ urls: [`${SCHEME}://*/*`] }, (d, cb) => {
-        if (d.resourceType === 'mainFrame') return cb({});
-        let from = '';
-        try {
-          const f = d.frame;
-          from = (d.resourceType === 'subFrame' ? f && f.parent && f.parent.url : f && f.url) || '';
-        } catch {}
-        if (from && !from.startsWith(`${SCHEME}://`)) {
-          if (debugLog) debugLog(`jamfile blocked (frame) ${d.url} from=${from}`);
-          return cb({ cancel: true });
-        }
-        cb({});
-      });
+      // (실제 등록은 main.js 의 onBeforeRequest 하나에서 blockedRequest 를 부름)
+    },
+    blockedRequest(d) {
+      if (d.resourceType === 'mainFrame') return false;
+      let from = '';
+      try {
+        const f = d.frame;
+        from = (d.resourceType === 'subFrame' ? f && f.parent && f.parent.url : f && f.url) || '';
+      } catch {}
+      if (from && !from.startsWith(`${SCHEME}://`)) {
+        if (debugLog) debugLog(`jamfile blocked (frame) ${d.url} from=${from}`);
+        return true;
+      }
+      return false;
     },
     has: (fid) => store.has(fid),
+    // 설정(shared/prefs.js) 적용
+    setLimits(pr) {
+      const MB = 1024 * 1024;
+      if (pr.fileMaxMB) LIM.pack = pr.fileMaxMB * MB;
+      if (pr.fileRoomMaxMB) LIM.store = Math.max(pr.fileRoomMaxMB * MB, LIM.pack);
+      if (pr.fileFolderMax) LIM.entries = pr.fileFolderMax;
+      LIM.htmlNet = pr.fileHtmlNetDefault === true;
+    },
     _internal: { pack, unpack, store },
   };
 }
 
-module.exports = { setupJamFiles, SCHEME, pack, unpack, FID_RE, KIND_OF, MAX_PACK };
+module.exports = { setupJamFiles, SCHEME, pack, unpack, FID_RE, KIND_OF, LIM };

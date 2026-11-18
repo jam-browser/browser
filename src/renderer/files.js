@@ -57,7 +57,7 @@ const jamFiles = (() => {
       // 초당 100조각(약 3.2MB/s) 정도로 — 서버의 바이트 한도 안
       if (++k % 10 === 0) {
         await jam.outQueue;
-        const wait = 100 - (performance.now() - t0);
+        const wait = 20 - (performance.now() - t0); // 초당 약 500조각(16MB/s) — 같은 PC 의 호스트 서버로 올림
         if (wait > 0) await sleep(wait);
         t0 = performance.now();
         renderSoon();
@@ -145,6 +145,10 @@ const jamFiles = (() => {
     if (!fid) return true;
     const f = files.get(fid);
     if (f && f.local) return true;
+    if (f && f.ready && pref('fileAutoDownload')) {
+      download(fid, true); // 설정: 묻지 않고 바로 받아서 열기
+      return false;
+    }
     if (askedFor !== fid) {
       askedFor = fid;
       const by = f && jam.member(f.by);
@@ -168,6 +172,8 @@ const jamFiles = (() => {
           if (f.by === jam.you.id) {
             f.bytes = null; // 다 올렸으면 앱 화면 쪽 사본은 버림 (메인 메모리에만)
             toast(`📎 공유 준비 완료: ${f.name}`, [{ label: 'Jam 탭에서 열기', fn: () => openInJam(f.fid) }]);
+          } else if (!f.local && pref('fileAutoDownload')) {
+            download(f.fid); // 설정: 호스트가 공유하면 바로 받기
           } else if (!f.local) {
             const by = jam.member(f.by);
             toast(`📎 ${by?.name || '호스트'}님이 파일을 공유했어요: ${KIND_ICON[f.kind] || ''} ${f.name} (${fmt(f.size)})${f.net ? ' · 🌐 이 HTML 은 인터넷에 접속할 수 있어요' : ''}`, [{ label: '받기', fn: () => download(f.fid) }]);
@@ -207,7 +213,7 @@ const jamFiles = (() => {
     render();
   }
   function reset() {
-    for (const f of files.values()) if (f.by !== jam.you?.id) jamApp.fileDrop(f.fid); // 받은 파일은 메모리에서 지움
+    if (!pref('fileKeepAfterLeave')) for (const f of files.values()) if (f.by !== jam.you?.id) jamApp.fileDrop(f.fid); // 받은 파일은 메모리에서 지움 (설정으로 유지 가능)
     files.clear();
     askedFor = null;
     render();

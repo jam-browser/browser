@@ -208,9 +208,9 @@ function client(port) {
   const st = await host.next('mstat');
   assert.equal(st.viewers, 1);
   assert.equal(st.late, 250);
-  assert.equal(st.cap, 25e6);
+  assert.equal(st.cap, 0); // 기본: 세션 한도 없음 (설정으로 정함)
   assert.ok(st.out > 0);
-  ok('서버가 1초마다 참여자 수 · 지연 · 버림 · 실제 전송량 · 세션 한도(200Mbps)를 알려 줌');
+  ok('서버가 1초마다 참여자 수 · 지연 · 버림 · 실제 전송량 · 세션 한도(기본 없음)를 알려 줌');
 
   // 조작: 권한 없으면 무시
   g.send({ type: 'mi', k: 'k', t: 'd', code: 'ArrowUp', mods: {} });
