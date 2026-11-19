@@ -8,6 +8,11 @@ http
       res.writeHead(200, { 'Content-Type': 'application/pdf' });
       return res.end(require('fs').readFileSync(require('path').join(__dirname, 'fixtures', 'test-5p.pdf')));
     }
+    // Google 로그인 대책 확인: 받은 UA · Sec-CH-UA 헤더를 그대로 보여 줌
+    if (u.pathname === '/echo-ua') {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Accept-CH': 'Sec-CH-UA-Full-Version-List, Sec-CH-UA-Platform-Version' });
+      return res.end(JSON.stringify({ ua: req.headers['user-agent'] || '', chua: req.headers['sec-ch-ua'] || '', platform: req.headers['sec-ch-ua-platform'] || '', full: req.headers['sec-ch-ua-full-version-list'] || '' }));
+    }
     // 사이트 보호 E2E: 추적기(목록: fixtures/blocklist.txt) · 서드파티 쿠키 · 권한
     if (u.pathname === '/trk.js') {
       res.writeHead(200, { 'Content-Type': 'text/javascript' });

@@ -48,6 +48,44 @@ const CHROME_UA = app.userAgentFallback
   .replace(/Chrome\/(\d+)\.[\d.]+/, 'Chrome/$1.0.0.0');
 app.userAgentFallback = CHROME_UA;
 
+// Google 로그인 "안전하지 않은 브라우저" 대책: UA 문자열만 Chrome 처럼 바꾸면, 요청 헤더(Sec-CH-UA)와
+// navigator.userAgentData 의 브랜드 목록에는 여전히 "Chromium" 만 있어서 내장 브라우저로 보인다.
+// → 웹페이지 탭마다 브랜드 목록에 실제 Chrome 처럼 "Google Chrome" 을 넣는다 (헤더 · 자바스크립트 모두, 버전은 실제 엔진 버전)
+let uaHints = null; // 앱 화면에서 읽은 실제 값 (OS 버전 · CPU 등)
+function chromeUaMetadata() {
+  const full = process.versions.chrome;
+  const major = full.split('.')[0];
+  const h = uaHints || {};
+  const keep = (list) => (Array.isArray(list) ? list : []).filter((b) => b && b.brand && !/Google Chrome|Electron/i.test(b.brand));
+  const brands = keep(h.brands);
+  const fullList = keep(h.fullVersionList);
+  if (!brands.length) brands.push({ brand: 'Not=A?Brand', version: '24' }, { brand: 'Chromium', version: major });
+  if (!fullList.length) fullList.push(...brands.map((b) => ({ brand: b.brand, version: b.brand === 'Chromium' ? full : `${b.version}.0.0.0` })));
+  const platform = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[process.platform] || 'Windows';
+  return {
+    brands: [...brands, { brand: 'Google Chrome', version: major }],
+    fullVersionList: [...fullList, { brand: 'Google Chrome', version: full }],
+    fullVersion: full,
+    platform,
+    platformVersion: h.platformVersion || (platform === 'Windows' ? '15.0.0' : ''),
+    architecture: h.architecture || 'x86',
+    model: '',
+    mobile: false,
+    bitness: h.bitness || '64',
+    wow64: false,
+  };
+}
+function applyChromeIdentity(contents) {
+  try {
+    if (!contents.debugger.isAttached()) contents.debugger.attach('1.3');
+    contents.debugger
+      .sendCommand('Emulation.setUserAgentOverride', { userAgent: CHROME_UA, userAgentMetadata: chromeUaMetadata() })
+      .catch((e) => console.error('UA 설정 실패:', e.message));
+  } catch (e) {
+    console.error('UA 설정 실패:', e.message); // 개발자 도구가 이미 붙어 있는 경우 등 — 그래도 UA 문자열은 Chrome
+  }
+}
+
 // Jam 탭의 webContents id → 다른 사이트 이동이 잠겨 있는지
 const lockedJamTabs = new Set();
 
@@ -112,6 +150,15 @@ function createWindow() {
     });
   }
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // 웹페이지 탭에 넣을 브랜드 정보의 실제 값(OS 버전 · CPU)을 이 엔진에서 읽어 둠
+  mainWindow.webContents.once('did-finish-load', () => {
+    mainWindow.webContents
+      .executeJavaScript(`navigator.userAgentData ? navigator.userAgentData.getHighEntropyValues(['platformVersion', 'architecture', 'bitness', 'fullVersionList']).then((v) => ({ ...v, brands: navigator.userAgentData.brands })) : null`)
+      .then((v) => {
+        if (v) uaHints = v;
+      })
+      .catch(() => {});
+  });
   mainWindow.on('closed', () => (mainWindow = null));
   mainWindow.on('enter-full-screen', () => mainWindow.webContents.send('fullscreen', true));
   mainWindow.on('leave-full-screen', () => mainWindow.webContents.send('fullscreen', false));
@@ -159,6 +206,7 @@ app.on('web-contents-created', (_e, contents) => {
   });
 
   if (contents.getType() === 'webview') {
+    applyChromeIdentity(contents);
     // HTTPS 우선: https 로 바꿔 연 주소가 실패하면 그 사이트는 http 로 (이 앱을 켜 둔 동안 기억)
     const httpsFallback = (_e, code, _desc, url, isMainFrame) => {
       if (isMainFrame === false || code === -3) return; // -3 = 사용자가 멈춤 · 다른 이동
