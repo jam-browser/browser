@@ -105,7 +105,59 @@ function setIdentity(contents, mode) {
 }
 function applyChromeIdentity(contents) {
   setIdentity(contents, 'chrome');
-  contents.once('destroyed', () => identityOf.delete(contents.id));
+  applyPasskeyPolicy(contents);
+  contents.once('destroyed', () => {
+    identityOf.delete(contents.id);
+    passkeyScripts.delete(contents.id);
+  });
+}
+
+// 패스키 끄기 (설정 → 보안 · 개인정보, 기본 끔): 사이트가 패스키(WebAuthn) 창 — Windows Hello · 보안 키 — 을 띄우지 못하게.
+//  페이지에는 "이 기기에서 패스키를 쓸 수 없음" 으로 보여서 Google 등이 묻지 않고 비밀번호 단계로 감.
+//  모든 프레임에서 페이지 스크립트보다 먼저 실행 (탭마다 붙어 있는 디버거로 등록)
+const PASSKEY_OFF = `(() => { try {
+  const no = () => Promise.resolve(false);
+  const C = window.PublicKeyCredential;
+  if (C) {
+    for (const k of ['isUserVerifyingPlatformAuthenticatorAvailable', 'isConditionalMediationAvailable']) { try { Object.defineProperty(C, k, { value: no, configurable: true, writable: true }); } catch {} }
+    if (C.getClientCapabilities) { try { Object.defineProperty(C, 'getClientCapabilities', { value: () => Promise.resolve({ conditionalGet: false, conditionalCreate: false, passkeyPlatformAuthenticator: false, userVerifyingPlatformAuthenticator: false, hybridTransport: false }), configurable: true, writable: true }); } catch {} }
+  }
+  const P = window.CredentialsContainer && CredentialsContainer.prototype;
+  if (P) {
+    const deny = () => Promise.reject(new DOMException('The operation either timed out or was not allowed.', 'NotAllowedError'));
+    for (const k of ['get', 'create']) {
+      const orig = P[k];
+      if (typeof orig !== 'function') continue;
+      try { Object.defineProperty(P, k, { value: function (o) { return o && o.publicKey ? deny() : orig.apply(this, arguments); }, configurable: true, writable: true }); } catch {}
+    }
+  }
+} catch {} })();`;
+const passkeyScripts = new Map(); // webContents id → 등록한 스크립트 id (끔일 때만)
+function applyPasskeyPolicy(contents) {
+  if (!contents || contents.isDestroyed() || !contents.debugger.isAttached()) return;
+  const id = passkeyScripts.get(contents.id);
+  const dbg = contents.debugger;
+  if (prefs.passkeys === 'on') {
+    if (id && id !== 'pending') {
+      passkeyScripts.delete(contents.id);
+      dbg.sendCommand('Page.removeScriptToEvaluateOnNewDocument', { identifier: id }).catch(() => {});
+    }
+    return;
+  }
+  if (id) return;
+  passkeyScripts.set(contents.id, 'pending');
+  dbg.sendCommand('Page.enable')
+    .catch(() => {})
+    .then(() => dbg.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: PASSKEY_OFF }))
+    .then((r) => {
+      // 등록하는 사이에 "켬" 으로 바뀌었으면 바로 뺌
+      if (prefs.passkeys === 'on') {
+        passkeyScripts.delete(contents.id);
+        return dbg.sendCommand('Page.removeScriptToEvaluateOnNewDocument', { identifier: r.identifier }).catch(() => {});
+      }
+      passkeyScripts.set(contents.id, r.identifier);
+    })
+    .catch(() => passkeyScripts.delete(contents.id));
 }
 // 엔진 기본 브랜드 (Google Chrome 을 넣지 않은 것) → Sec-CH-UA 헤더 값
 function nativeBrandsHeader() {
@@ -622,6 +674,9 @@ ipcMain.handle('nearby:list', (e) => (fromApp(e) ? nearbyList : []));
 // ---------- 세부 설정: 앱 화면이 시작할 때 · 바꿀 때마다 보냄 → 바로 적용 ----------
 function applyPrefs(prev) {
   if (jamServer) jamServer.setLimits(PREFS.serverLimits(prefs));
+  if (!prev || prev.passkeys !== prefs.passkeys) {
+    for (const wc of webContents.getAllWebContents()) if (wc.getType() === 'webview') applyPasskeyPolicy(wc);
+  }
   if (updater) {
     updater.autoDownload = prefs.updateAuto;
     if (verifiedVersion) updater.autoInstallOnAppQuit = prefs.updateInstall !== 'manual';

@@ -6,7 +6,7 @@
 #   ... -Relay <path to jam-relay.js>   # default: ..\jam-backend-build\jam-relay.js next to this repo, or $env:JAM_E2E_RELAY
 #   ... -Tests update   # auto-update signature check: needs dist\win-unpacked + $env:JAM_BROWSER_RELEASE_KEY (the test starts its own app)
 param(
-  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'tabs', 'smoke', 'update'),
+  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'tabs', 'passkey', 'smoke', 'update'),
   [switch]$Packaged,
   [string]$Relay = $env:JAM_E2E_RELAY
 )
