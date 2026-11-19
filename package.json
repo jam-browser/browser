@@ -1,7 +1,7 @@
 {
   "name": "jam-browser",
   "productName": "Jam Browser",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "친구와 같은 페이지를 함께 보는 Jam 기능이 있는 데스크톱 브라우저",
   "author": "jam-browser",
   "homepage": "https://github.com/jam-browser/browser",
