@@ -18,6 +18,7 @@
     { id: 'set-files', label: '같이 보는 파일' },
     { id: 'set-security', label: '보안 · 개인정보' },
     { id: 'set-sound', label: '소리' },
+    { id: 'set-update', label: '업데이트' },
   ];
 
   const S = [
@@ -75,6 +76,13 @@
     // ---------- 소리 ----------
     { key: 'muteNewTabs', page: 'set-sound', group: '탭', label: '새 탭은 음소거로 시작', type: 'bool', def: false, help: '탭의 🔊 / 🔇 로 탭마다 켜고 끌 수 있어요' },
     { key: 'muteJamTab', page: 'set-sound', group: '탭', label: 'Jam 탭은 음소거로 시작', type: 'bool', def: false },
+
+    // ---------- 업데이트 ----------
+    { key: 'updateAuto', page: 'set-update', group: '확인 · 받기', label: '새 버전을 자동으로 확인하고 받기', type: 'bool', def: true, main: true, warnOff: '끄면 보안 수정도 직접 ☰ → 업데이트 확인 을 눌러야 받아요' },
+    { key: 'updateCheckHours', page: 'set-update', group: '확인 · 받기', label: '확인 간격', type: 'number', def: 4, min: 1, max: 24, unit: '시간', main: true, help: '앱을 켜고 5초 뒤에도 한 번 확인해요' },
+    { key: 'updateInstall', page: 'set-update', group: '설치', label: '받은 업데이트 설치', type: 'select', def: 'quit', main: true, options: [['quit', '앱을 끌 때'], ['idle', '쓰지 않을 때 자동으로 다시 켜서 (Jam 중이 아닐 때)'], ['manual', '내가 "지금 재시작" 을 누를 때만']] },
+    { key: 'updateIdleMin', page: 'set-update', group: '설치', label: '"쓰지 않을 때" 기준', type: 'number', def: 30, min: 5, max: 240, unit: '분', main: true },
+    { key: 'updateVerify', page: 'set-update', group: '설치', label: '업데이트 서명 확인 (배포 키로 서명한 설치 파일만 설치)', type: 'bool', def: true, locked: true, help: 'GitHub 릴리스가 바뀌어도 가짜 설치 파일은 설치되지 않아요. 끌 수 없어요' },
   ];
 
   const DEFAULTS = Object.fromEntries(S.map((s) => [s.key, s.def]));

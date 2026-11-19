@@ -246,7 +246,12 @@ const PING_KINDS = ['here', 'what', 'look', 'warn', 'omw'];
 const PING_TEXT = { here: '📍', what: '❓', look: '👀', warn: '⚠️', omw: '🏃' };
 // 각 탭에 핑 설정을 알림: Jam 탭에서만 켜짐 (다른 탭의 Alt+클릭은 그대로 페이지로)
 const pingCfgSent = new WeakMap();
+let lastBusy = null;
 function pushPingConfig(only) {
+  if (!only && lastBusy !== !!jam.active && jamApp.setBusy) {
+    lastBusy = !!jam.active;
+    jamApp.setBusy(lastBusy); // Jam 중에는 "쓰지 않을 때 업데이트" 재시작 안 함
+  }
   for (const t of only ? [only] : tabs) {
     if (!t.ready && !only) continue;
     const cfg = { on: !!(pref('pingEnabled') && jam.active && t === jam.tab), key: pref('pingKey') };

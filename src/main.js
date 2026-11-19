@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, Menu, clipboard, session, webContents, safeStorage, powerMonitor, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, clipboard, session, webContents, safeStorage, powerMonitor, protocol, net } = require('electron');
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 const { installChromeWebStore, uninstallExtension } = require('electron-chrome-web-store');
 const path = require('path');
@@ -452,6 +452,11 @@ ipcMain.handle('nearby:list', (e) => (fromApp(e) ? nearbyList : []));
 // ---------- 세부 설정: 앱 화면이 시작할 때 · 바꿀 때마다 보냄 → 바로 적용 ----------
 function applyPrefs(prev) {
   if (jamServer) jamServer.setLimits(PREFS.serverLimits(prefs));
+  if (updater) {
+    updater.autoDownload = prefs.updateAuto;
+    if (verifiedVersion) updater.autoInstallOnAppQuit = prefs.updateInstall !== 'manual';
+    if (!prev || prev.updateCheckHours !== prefs.updateCheckHours || prev.updateAuto !== prefs.updateAuto) scheduleUpdateChecks();
+  }
   if (jamFilesApi) jamFilesApi.setLimits(prefs);
   // 근처 알림: 끄거나 간격이 바뀌면 다시 시작
   if (beacon && (!prefs.nearbyAnnounce || (prev && prev.nearbyIntervalSec !== prefs.nearbyIntervalSec))) {
@@ -720,7 +725,22 @@ function pushUpdate(state) {
   updateState = state;
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update', state);
 }
+// 자동 업데이트 (설정 → 업데이트)
+//  - 새 버전을 받으면 릴리스의 서명 파일(.sig)을 받아 앱 안의 공개키(update-key.pub.pem)로 확인한 뒤에만 설치해요
+//    (확인 전에는 "끌 때 설치" 도 꺼 둠 → 서명이 안 맞으면 받은 파일을 지우고 설치하지 않음)
+//  - 설치 시점: 앱을 끌 때(기본) · 쓰지 않을 때 자동으로 다시 켜서(Jam 중이 아닐 때) · 내가 누를 때만
+let updater = null;
+let updateTimer = null;
+let verifiedVersion = null;
+let appBusy = false; // 앱 화면이 알려 줌: Jam 중이면 자동 재시작 안 함
+const { verifyFile } = require('../shared/update-sign');
+function scheduleUpdateChecks() {
+  clearInterval(updateTimer);
+  if (updater && prefs.updateAuto) updateTimer = setInterval(() => updater.checkForUpdates().catch(() => {}), prefs.updateCheckHours * 3600e3);
+}
 function setupAutoUpdate() {
+  // 테스트 전용: 화면 밖 테스트 모드에서만 다른 업데이트 주소를 쓸 수 있음
+  const testFeed = process.env.JAM_TEST_OFFSCREEN === '1' ? process.env.JAM_UPDATE_FEED : '';
   if (!app.isPackaged) return;
   let autoUpdater;
   try {
@@ -728,20 +748,61 @@ function setupAutoUpdate() {
   } catch {
     return;
   }
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  updater = autoUpdater;
+  if (testFeed) autoUpdater.setFeedURL({ provider: 'generic', url: testFeed });
+  autoUpdater.autoDownload = prefs.updateAuto;
+  autoUpdater.autoInstallOnAppQuit = false; // 서명을 확인한 뒤에 켬
   autoUpdater.on('checking-for-update', () => pushUpdate({ state: 'checking' }));
   autoUpdater.on('update-not-available', () => pushUpdate({ state: 'latest', version: app.getVersion() }));
-  autoUpdater.on('update-available', (info) => pushUpdate({ state: 'downloading', version: info.version, percent: 0 }));
+  autoUpdater.on('update-available', (info) => pushUpdate({ state: autoUpdater.autoDownload ? 'downloading' : 'available', version: info.version, percent: 0 }));
   autoUpdater.on('download-progress', (p) => pushUpdate({ state: 'downloading', version: updateState.version, percent: Math.round(p.percent) }));
-  autoUpdater.on('update-downloaded', (info) => pushUpdate({ state: 'ready', version: info.version }));
+  autoUpdater.on('update-downloaded', async (info) => {
+    verifiedVersion = null;
+    autoUpdater.autoInstallOnAppQuit = false;
+    pushUpdate({ state: 'verifying', version: info.version });
+    const file = info.downloadedFile;
+    const name = path.basename(String((info.files && info.files[0] && info.files[0].url) || file));
+    const sigUrl = testFeed ? `${testFeed.replace(/\/+$/, '')}/${name}.sig` : `https://github.com/jam-browser/browser/releases/download/v${info.version}/${name}.sig`;
+    try {
+      const res = await net.fetch(sigUrl);
+      if (!res.ok) throw new Error(`서명 파일을 받지 못했어요 (${res.status})`);
+      const pub = fs.readFileSync(path.join(__dirname, 'update-key.pub.pem'), 'utf8');
+      const v = await verifyFile(pub, info.version, file, await res.text());
+      if (!v.ok) throw new Error(v.reason);
+      verifiedVersion = info.version;
+      autoUpdater.autoInstallOnAppQuit = prefs.updateInstall !== 'manual';
+      console.log(`[update] ${info.version} 서명 확인됨`);
+      pushUpdate({ state: 'ready', version: info.version, verified: true, install: prefs.updateInstall });
+    } catch (e) {
+      console.log(`[update] ${info.version} 서명 확인 실패: ${e.message}`);
+      try {
+        fs.unlinkSync(file);
+      } catch {}
+      pushUpdate({ state: 'error', version: info.version, verifyFailed: true, message: `업데이트 서명 확인 실패: ${e.message} — 설치하지 않았어요` });
+    }
+  });
   autoUpdater.on('error', (e) => pushUpdate({ state: 'error', message: String(e?.message || e).slice(0, 200) }));
-  const check = () => autoUpdater.checkForUpdates().catch(() => {});
-  setTimeout(check, 5000);
-  setInterval(check, 4 * 60 * 60 * 1000); // 4시간마다
-  ipcMain.on('update:check', check);
-  ipcMain.on('update:install', () => autoUpdater.quitAndInstall(false, true));
+  const check = (manual) => {
+    if (manual === true) autoUpdater.autoDownload = true; // 직접 누른 확인은 받기까지
+    autoUpdater.checkForUpdates().catch(() => {});
+  };
+  if (prefs.updateAuto) setTimeout(check, 5000);
+  scheduleUpdateChecks();
+  ipcMain.on('update:check', (e) => fromApp(e) && check(true));
+  ipcMain.on('update:install', (e) => {
+    if (fromApp(e) && verifiedVersion) autoUpdater.quitAndInstall(false, true);
+  });
+  // 쓰지 않을 때 자동으로 다시 켜서 설치 (설정: 쓰지 않을 때) — Jam 중이면 기다림
+  setInterval(() => {
+    if (!verifiedVersion || prefs.updateInstall !== 'idle' || appBusy) return;
+    if (powerMonitor.getSystemIdleTime() < prefs.updateIdleMin * 60) return;
+    console.log(`[update] ${prefs.updateIdleMin}분 동안 쓰지 않아서 ${verifiedVersion} 로 다시 켜요`);
+    autoUpdater.quitAndInstall(true, true);
+  }, 60e3).unref();
 }
+ipcMain.on('app:busy', (e, b) => {
+  if (fromApp(e)) appBusy = !!b;
+});
 ipcMain.handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged, update: updateState }));
 
 // ======================================================================

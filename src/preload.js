@@ -62,6 +62,7 @@ contextBridge.exposeInMainWorld('jamApp', {
   checkUpdate: () => ipcRenderer.send('update:check'),
   installUpdate: () => ipcRenderer.send('update:install'),
   onUpdate: (cb) => ipcRenderer.on('update', (_e, s) => cb(s)),
+  setBusy: (b) => ipcRenderer.send('app:busy', !!b), // Jam 중이면 자동 업데이트 재시작을 미룸
 });
 
 // 브라우저 계정 · 비밀번호 뱅크 · 친구

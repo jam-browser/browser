@@ -34,4 +34,4 @@ powershell -ExecutionPolicy Bypass -File test\e2e-jam\run.ps1 -Packaged         
 | ping-wheel | 핑 휠 5방향 · Jam 탭 밖 Alt+클릭은 그대로 · 미러 화면 휠 |
 | relay-cap | 손님당 0.5Mbps 로 제한한 중계 서버: 버리지 않고 늦춤 · 호스트가 스스로 화질을 낮춤 · 파일 끝까지 |
 | smoke | 버전 표시 · 확장 프로그램 줄 · 설정 페이지 · 📍 버튼 (릴리스 전 패키지 확인용) |
-| update | 자동 업데이트 서명 확인 (패키지 앱 + 로컬 업데이트 서버): 배포 키 서명은 준비됨 · 다른 키 서명은 거부하고 삭제. `-Packaged` 빌드와 `JAM_BROWSER_RELEASE_KEY` 필요, 직접 실행: `node test2e-jam\update.e2e.js` |
+| update | 자동 업데이트 서명 확인 (패키지 앱 + 로컬 업데이트 서버): 배포 키 서명은 준비됨 · 다른 키 서명은 거부하고 삭제. `-Packaged` 빌드와 `JAM_BROWSER_RELEASE_KEY` 필요, 직접 실행: `node test\e2e-jam\update.e2e.js` |
