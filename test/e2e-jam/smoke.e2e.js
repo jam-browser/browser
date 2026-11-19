@@ -65,21 +65,21 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   for (let i = 0; i < 30 && !hdrs.some((h) => h['sec-ch-ua']); i++) await sleep(300);
   const h = hdrs.find((x) => x['sec-ch-ua']) || {};
   ua.hdr = { ua: h['user-agent'] || '', chua: h['sec-ch-ua'] || '', platform: h['sec-ch-ua-platform'] || '' };
-  // Google 로그인 화면에서만 Firefox (헤더 · 페이지 모두), 나오면 다시 Chrome — 화면만 열고 아무것도 입력하지 않음
+  // Google 로그인 화면에서만 원래 모습(Electron UA, 꾸미지 않은 브랜드), 나오면 다시 Chrome 모양 — 화면만 열고 아무것도 입력하지 않음
   hdrs.length = 0;
   await wcmd('Page.navigate', { url: 'https://accounts.google.com/' });
   for (let i = 0; i < 40 && !(await wv(`location.hostname.startsWith('accounts.google.') && document.readyState !== 'loading'`)); i++) await sleep(300);
   const gh = hdrs.find((x) => x['user-agent'] && !x[':path']?.includes('favicon')) || {};
-  const gjs = await wv(`({ nav: navigator.userAgent, uad: typeof navigator.userAgentData, vendor: navigator.vendor, host: location.hostname })`);
+  const gjs = await wv(`({ nav: navigator.userAgent, gBrands: navigator.userAgentData ? navigator.userAgentData.brands.map(b => b.brand) : [], host: location.hostname })`);
   hdrs.length = 0;
   await wcmd('Page.navigate', { url: 'https://example.com/?back' });
   for (let i = 0; i < 30 && !hdrs.some((x) => x['sec-ch-ua']); i++) await sleep(300);
   const back = await wv(`({ nav: navigator.userAgent, brands: navigator.userAgentData && navigator.userAgentData.brands.map(b => b.brand) })`);
-  const signin = { hdrUa: gh['user-agent'] || '', hdrChua: Object.keys(gh).filter((k) => k.startsWith('sec-ch-ua')), ...gjs, backNav: back.nav, backBrands: back.brands, backChua: (hdrs.find((x) => x['sec-ch-ua']) || {})['sec-ch-ua'] || '' };
+  const signin = { hdrUa: gh['user-agent'] || '', hdrChua: gh['sec-ch-ua'] || '', ...gjs, backNav: back.nav, backBrands: back.brands, backChua: (hdrs.find((x) => x['sec-ch-ua']) || {})['sec-ch-ua'] || '' };
   console.log(JSON.stringify(signin));
-  const signinOk = /Firefox\//.test(signin.hdrUa) && !signin.hdrChua.length && /Firefox\//.test(signin.nav) && signin.uad === 'undefined' && signin.vendor === '' &&
-    /Chrome\//.test(signin.backNav) && (signin.backBrands || []).includes('Google Chrome') && /Google Chrome/.test(signin.backChua);
-  console.log(signinOk ? `✓ Google sign-in page (${signin.host}) sees Firefox (header · page), back to Google Chrome afterwards` : '✗ Google sign-in identity switch');
+  const signinOk = /Electron\//.test(signin.hdrUa) && /Electron\//.test(signin.nav) && !/Google Chrome/.test(signin.hdrChua) && !signin.gBrands.includes('Google Chrome') &&
+    !/Electron\//.test(signin.backNav) && (signin.backBrands || []).includes('Google Chrome') && /Google Chrome/.test(signin.backChua);
+  console.log(signinOk ? `✓ Google sign-in page (${signin.host}) sees the real Electron identity (header · page), back to Chrome-shaped afterwards` : '✗ Google sign-in identity switch');
   ua.signinOk = signinOk;
   ww.close();
   console.log(JSON.stringify(ua));
