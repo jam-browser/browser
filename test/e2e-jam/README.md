@@ -36,5 +36,6 @@ powershell -ExecutionPolicy Bypass -File test\e2e-jam\run.ps1 -Packaged         
 | relay-cap | 손님당 0.5Mbps 로 제한한 중계 서버: 버리지 않고 늦춤 · 호스트가 스스로 화질을 낮춤 · 파일 끝까지 |
 | siteguard | 추적기 차단(테스트 목록) · 🛡 패널(막은 수 · 사이트별 끄기) · 서드파티 쿠키 차단/허용 · 알림 권한 묻기 → 허용 → 🛡 에서 차단 · 사이트별 설정 목록 · 설정에서 끄기 |
 | resume | 다른 기기에서 이어 보기: A 가 중계 서버로 Jam → B 가 계정 백업 불러오기 + 잠금 해제 → 자동으로 찾아서 이어 보기 → 승인 없이 입장 (💻) → Jam 끝나면 중계 서버에서 사라짐. presence 를 아는 중계 서버(1.0.5+)가 필요 |
-| smoke | 버전 표시 · 확장 프로그램 줄 · 설정 페이지 · 📍 버튼 (릴리스 전 패키지 확인용) |
+| tabs | 탭이 저절로 왔다갔다 하지 않는지: 빠르게 바꾸기 · 새 탭 열고 닫기 · Ctrl+Tab 연타 뒤 3초 동안 저절로 바뀐 횟수 0 |
+| smoke | 버전 표시 · 확장 프로그램 줄 · 설정 페이지 · 📍 버튼 · 웹페이지 탭이 Google Chrome 으로 보이는지(UA · Sec-CH-UA · userAgentData) (릴리스 전 패키지 확인용) |
 | update | 자동 업데이트 서명 확인 (패키지 앱 + 로컬 업데이트 서버): 배포 키 서명은 준비됨 · 다른 키 서명은 거부하고 삭제. `-Packaged` 빌드와 `JAM_BROWSER_RELEASE_KEY` 필요, 직접 실행: `node test\e2e-jam\update.e2e.js` |

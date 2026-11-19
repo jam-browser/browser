@@ -297,7 +297,10 @@ function navigateTab(tab, url) {
   if (tab === activeTab) updateToolbar();
 }
 
+let lastTabActivateAt = 0;
 function activateTab(tab) {
+  if (!tab) return;
+  lastTabActivateAt = Date.now();
   const wasJam = activeTab && activeTab === jam.tab;
   activeTab = tab;
   for (const t of tabs) t.webview.classList.toggle('inactive', t !== tab);
@@ -317,12 +320,20 @@ function activateTab(tab) {
 }
 
 // 확장 프로그램에 지금 보고 있는 탭을 알린다 (아직 webview 가 안 붙었으면 붙은 뒤에)
+let lastExtNotified = null;
 function notifyExtActiveTab(tab) {
   const id = tabWcId(tab);
-  if (id != null) return jamApp.extTabActivated(id);
+  if (id != null) {
+    if (id === lastExtNotified) return; // 같은 탭을 또 알리지 않음
+    lastExtNotified = id;
+    return jamApp.extTabActivated(id);
+  }
   tab.webview.addEventListener('did-attach', () => {
     const wcId = tabWcId(tab);
-    if (tab === activeTab && wcId != null) jamApp.extTabActivated(wcId);
+    if (tab === activeTab && wcId != null && wcId !== lastExtNotified) {
+      lastExtNotified = wcId;
+      jamApp.extTabActivated(wcId);
+    }
   }, { once: true });
 }
 
@@ -440,9 +451,22 @@ jamApp.onExtCreateTab(({ reqId, url, active }) => {
   const tab = createTab(url || ui.newTabUrl(), { activate: active });
   tab.webview.addEventListener('did-attach', () => jamApp.extTabCreated(reqId, tabWcId(tab)), { once: true });
 });
+// 확장 프로그램이 탭을 고름 (chrome.tabs.update active). 고리 방지:
+//  - 방금(0.8초 안) 내가 탭을 바꿨으면 늦게 도착한 옛 알림으로 보고 무시
+//  - 3초에 3번 넘게 오면 그 뒤로는 무시 (확장 프로그램이 탭을 계속 바꾸는 경우)
+let extSelects = [];
 jamApp.onExtSelectTab((wcId) => {
+  lastExtNotified = wcId; // 확장 프로그램 쪽은 이제 이 탭이 지금 탭이라고 알고 있음
   const tab = tabByWcId(wcId);
-  if (tab && tab !== activeTab) activateTab(tab);
+  if (!tab || tab === activeTab) return;
+  const now = Date.now();
+  extSelects = extSelects.filter((t) => now - t < 3000);
+  if (now - lastTabActivateAt < 800 || extSelects.length >= 3) {
+    if (extSelects.length >= 3) console.warn('확장 프로그램의 탭 바꾸기가 너무 잦아서 무시했어요');
+    return notifyExtActiveTab(activeTab); // 무시하면 확장 프로그램 쪽에도 실제 지금 탭을 다시 알려 줌 (되돌아오지 않음)
+  }
+  extSelects.push(now);
+  activateTab(tab);
 });
 jamApp.onExtCloseTab((wcId) => {
   const tab = tabByWcId(wcId);

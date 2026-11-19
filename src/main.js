@@ -955,11 +955,20 @@ ipcMain.on('ext:tab-created', (_e, { reqId, wcId }) => {
   pendingExtTabs.delete(reqId);
   if (done) done(wcId);
 });
-ipcMain.on('ext:tab-activated', (_e, wcId) => {
+// 앱이 "지금 탭" 을 알려 줄 때는, 확장 프로그램 시스템이 그걸 다시 "이 탭을 골라" 로 되돌려 보내지 않게 막는다.
+// (되돌아온 알림이 늦게 도착하면 그 사이 바꾼 탭에서 이전 탭으로 끌려가고, 그게 또 되돌아와서 탭이 끝없이 왔다갔다 했음)
+let appActivatingTab = false;
+ipcMain.on('ext:tab-activated', (e, wcId) => {
   // 아직 webview 가 안 붙은 탭이면 id 가 null → fromId 가 예외를 던져 오류 창이 뜨던 문제
-  if (!Number.isInteger(wcId)) return;
+  if (!fromApp(e) || !Number.isInteger(wcId)) return;
   const wc = webContents.fromId(wcId);
-  if (wc && extensions) extensions.selectTab(wc);
+  if (!wc || !extensions) return;
+  appActivatingTab = true;
+  try {
+    extensions.selectTab(wc);
+  } finally {
+    appActivatingTab = false;
+  }
 });
 
 // 웹 스토어에서 "Chrome에 추가"를 누르면 한 번 더 묻는다
@@ -989,7 +998,8 @@ function setupExtensions(ses) {
   extensions = new ElectronChromeExtensions({
     session: ses,
     createTab: createTabForExtension,
-    selectTab: (wc) => mainWindow?.webContents.send('ext:select-tab', wc.id),
+    // 확장 프로그램이 직접 탭을 고를 때만 앱에 알림 (앱이 알려 준 것의 메아리는 보내지 않음)
+    selectTab: (wc) => !appActivatingTab && mainWindow?.webContents.send('ext:select-tab', wc.id),
     removeTab: (wc) => mainWindow?.webContents.send('ext:close-tab', wc.id),
   });
   // 앱 UI 창(기본 세션)에 확장 아이콘 줄을 보여 준다

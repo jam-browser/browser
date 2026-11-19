@@ -5,7 +5,7 @@
 #   ... -Packaged        # use dist\win-unpacked\Jam Browser.exe (run `npx electron-builder --win --dir` first)
 #   ... -Relay <path to jam-relay.js>   # default: ..\jam-backend-build\jam-relay.js next to this repo, or $env:JAM_E2E_RELAY
 param(
-  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'smoke'),
+  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'tabs', 'smoke'),
   [switch]$Packaged,
   [string]$Relay = $env:JAM_E2E_RELAY
 )
