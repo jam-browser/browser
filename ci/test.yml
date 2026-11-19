@@ -1,0 +1,22 @@
+# PR · main 에 올라올 때마다 단위 테스트 (npm test)
+# 사용하려면 이 파일을 .github/workflows/test.yml 로 옮겨 올리세요 (gh 토큰에 workflow 권한 필요: gh auth refresh -s workflow)
+name: test
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  unit:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # electron 바이너리는 단위 테스트에 필요 없어요 (서버 · 암호화 · 규칙 테스트만)
+      - run: npm ci --ignore-scripts
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - run: npm test

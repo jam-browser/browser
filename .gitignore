@@ -12,3 +12,13 @@ LOCAL-SETUP.md
 .jam-dev/
 # 자동 생성 (npm install 때 scripts/build-toolbar-preload.js 가 만듦)
 src/generated/
+
+# test/e2e-jam 실행 결과
+test/e2e-jam/out/
+test/e2e-jam/fixtures/
+test/e2e-jam/ud-*/
+test/e2e-jam/*.log
+test/e2e-jam/*.err
+# 배포 비밀키는 저장소에 넣지 않음 (공개키만 예외)
+*.pem
+!src/update-key.pub.pem
