@@ -74,6 +74,35 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await g.applyPrefs();
   ok('설정에서 끄면 차단 안 함');
 
+  // ---- 인터넷 사이트 → 내 PC · 같은 네트워크 ----
+  const { localKind } = require('../shared/site');
+  const H = (u) => new URL(u).hostname;
+  for (const u of ['http://127.0.0.1:3030/', 'http://localhost/', 'http://a.localhost/', 'http://2130706433/', 'http://0x7f.1/', 'http://[::1]/', 'http://[::ffff:127.0.0.1]/', 'http://0.0.0.0:3030/']) assert.equal(localKind(H(u)), 'loopback', u);
+  for (const u of ['http://192.168.0.1/', 'http://10.0.0.5/', 'http://172.16.0.1/', 'http://172.31.255.1/', 'http://169.254.169.254/', 'http://100.64.0.1/', 'http://[fd12::1]/', 'http://[fe80::1]/', 'http://[::ffff:192.168.0.1]/']) assert.equal(localKind(H(u)), 'private', u);
+  for (const u of ['https://example.com/', 'http://8.8.8.8/', 'http://172.32.0.1/', 'http://[2001:4860::8888]/', 'http://localhost.example.com/']) assert.equal(localKind(H(u)), null, u);
+  ok('내 PC · 같은 네트워크 주소 판별 (10진수 · 16진수 · IPv6 · IPv4-mapped 표기 포함)');
+  sent.length = 0;
+  for (const [url, type] of [['http://127.0.0.1:3030/', 'xhr'], ['ws://localhost:3030/', 'webSocket'], ['http://192.168.0.1/cgi-bin/reboot', 'image'], ['http://[::1]:8080/', 'subFrame']]) {
+    assert.deepEqual(g.onRequest(req(url, type)), { cancel: true }, url);
+  }
+  assert.ok(sent.some(([ch, d]) => ch === 'shield:local' && d.kind === 'loopback'));
+  assert.deepEqual((await call('site:info', { wcId: 7 })).localBlocked.map((x) => x[0]).sort(), ['127.0.0.1:3030', '192.168.0.1', '[::1]:8080', 'localhost:3030']);
+  mkTab(9, 'http://192.168.0.1/admin'); // 공유기 관리 화면 자체 → 같은 네트워크 요청은 그대로
+  assert.equal(g.onRequest(req('http://192.168.0.1/status.json', 'xhr', 9)), null);
+  mkTab(10, 'http://localhost:8080/'); // 내 PC 의 개발 서버
+  assert.equal(g.onRequest(req('http://127.0.0.1:3030/', 'xhr', 10)), null);
+  ok('인터넷 사이트가 내 PC · 공유기 주소를 부르면 막음 (fetch · WebSocket · 그림 · iframe), 내 PC · 같은 네트워크 페이지는 그대로');
+  await call('site:set', { site: 'example.com', key: 'shieldOff', value: true });
+  assert.deepEqual(g.onRequest(req('http://127.0.0.1:3030/')), { cancel: true }); // 추적기 차단을 꺼도 이건 따로
+  await call('site:set', { site: 'example.com', key: 'shieldOff', value: false });
+  await call('site:set', { site: 'example.com', key: 'localNet', value: true });
+  assert.equal(g.onRequest(req('http://127.0.0.1:3030/')), null);
+  await call('site:set', { site: 'example.com', key: 'localNet', value: false });
+  prefs.blockLocalNet = false;
+  assert.equal(g.onRequest(req('http://127.0.0.1:3030/')), null);
+  prefs.blockLocalNet = true;
+  ok('🛡 에서 사이트마다 허용 · 설정에서 끄기 (추적기 차단 끄기와는 따로)');
+
   // ---- 서드파티 쿠키 ----
   const sendH = (url, top = 7) => new Promise((r) => L.send({ ...req(url, 'xhr', top), requestHeaders: { Cookie: 'a=1', Accept: '*/*' } }, r));
   const recvH = (url) => new Promise((r) => L.recv({ ...req(url, 'image'), responseHeaders: { 'Set-Cookie': ['b=2'], 'content-type': ['image/gif'] } }, r));

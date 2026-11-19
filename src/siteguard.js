@@ -11,7 +11,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const { siteOf } = require('../shared/site');
+const { siteOf, localKind } = require('../shared/site');
 
 const LIST_BASE = 'https://raw.githubusercontent.com/ghostery/adblocker/master/packages/adblocker/assets';
 const LISTS = {
@@ -167,9 +167,16 @@ function setupSiteGuard({ app, ipcMain, net, webContents, getWindow, getPrefs, t
   const stats = new Map(); // wcId → { n, hosts: Map }
   let statTimer = null;
   const dirty = new Set();
-  function bump(wcId, url) {
+  function bump(wcId, url, local) {
     let s = stats.get(wcId);
-    if (!s) stats.set(wcId, (s = { n: 0, hosts: new Map() }));
+    if (!s) stats.set(wcId, (s = { n: 0, hosts: new Map(), local: new Map() }));
+    if (local) {
+      let lh = '';
+      try {
+        lh = new URL(url).host;
+      } catch {}
+      s.local.set(lh, (s.local.get(lh) || 0) + 1);
+    }
     s.n++;
     let h = '';
     try {
@@ -201,11 +208,27 @@ function setupSiteGuard({ app, ipcMain, net, webContents, getWindow, getPrefs, t
       if (Number.isInteger(d.webContentsId)) resetStats(d.webContentsId);
       return null; // 페이지 이동 자체는 막지 않음
     }
-    if (!engine || engineMode === 'off') return null;
     const t = topOf(d);
     if (!t) return null;
     const site = siteOf(t.top);
-    if (!site || siteEntry(site).shieldOff) return null;
+    if (!site) return null;
+    // 인터넷 사이트 → 내 PC(루프백) · 같은 네트워크 주소: 막음 (공유기 관리 화면 조작 · 내 PC 의 프로그램 · Jam 서버 찌르기 방지)
+    //  페이지 자체가 내 PC · 같은 네트워크에 있으면 그대로. 🛡 에서 사이트마다 허용
+    if (getPrefs().blockLocalNet !== false) {
+      let reqHost = '';
+      let topHost = '';
+      try {
+        reqHost = new URL(d.url).hostname;
+        topHost = new URL(t.top).hostname;
+      } catch {}
+      const kind = localKind(reqHost);
+      if (kind && !localKind(topHost) && !siteEntry(site).localNet) {
+        bump(t.wc.id, d.url, kind);
+        send('shield:local', { wcId: t.wc.id, url: d.url.slice(0, 200), kind });
+        return { cancel: true };
+      }
+    }
+    if (!engine || engineMode === 'off' || siteEntry(site).shieldOff) return null;
     let source = t.top;
     try {
       if (d.frame && d.frame.url) source = d.frame.url;
@@ -341,6 +364,8 @@ function setupSiteGuard({ app, ipcMain, net, webContents, getWindow, getPrefs, t
       cookiesMode: p.thirdPartyCookies,
       shieldOff: !!(site && siteEntry(site).shieldOff),
       cookies3p: !!(site && siteEntry(site).cookies3p),
+      localNet: !!(site && siteEntry(site).localNet),
+      localBlocked: s && s.local ? [...s.local.entries()] : [],
       perms: origin ? { ...(store.perms[origin] || {}) } : {},
       blocked: s ? s.n : 0,
       hosts: s ? [...s.hosts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12) : [],
@@ -349,7 +374,7 @@ function setupSiteGuard({ app, ipcMain, net, webContents, getWindow, getPrefs, t
     };
   });
   handle('site:set', ({ site, origin, key, value }) => {
-    if (key === 'shieldOff' || key === 'cookies3p') {
+    if (key === 'shieldOff' || key === 'cookies3p' || key === 'localNet') {
       if (typeof site !== 'string' || !site || site.length > 253) return false;
       const e = { ...(store.sites[site] || {}) };
       if (value) e[key] = true;

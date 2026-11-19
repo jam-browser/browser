@@ -50,6 +50,10 @@
     $('#shield-on').disabled = info.mode === 'off';
     $('#shield-cookies').checked = info.cookiesMode === 'block' && !info.cookies3p;
     $('#shield-cookies').disabled = info.cookiesMode !== 'block';
+    $('#shield-local').checked = prefs.get('blockLocalNet') !== false && !info.localNet;
+    $('#shield-local').disabled = prefs.get('blockLocalNet') === false;
+    $('#shield-local-note').hidden = !info.localBlocked.length;
+    $('#shield-local-note').textContent = info.localBlocked.length ? `🏠 이 페이지가 내 PC · 같은 네트워크 주소에 접속하려다 막혔어요: ${info.localBlocked.map(([h, c]) => `${h} (${c})`).join(', ')}` : '';
     const kinds = Object.keys(info.perms);
     $('#shield-perms').replaceChildren(
       ...(kinds.length ? [el('div', { class: 'pref-group' }, `${hostOf(info.origin)} 권한`)] : []),
@@ -73,6 +77,19 @@
   }
   $('#shield-on').addEventListener('change', () => setSite('shieldOff', !$('#shield-on').checked));
   $('#shield-cookies').addEventListener('change', () => setSite('cookies3p', !$('#shield-cookies').checked));
+  $('#shield-local').addEventListener('change', () => setSite('localNet', !$('#shield-local').checked));
+  // 막혔을 때 한 번 알림 (페이지마다)
+  const localToasted = new Set();
+  jamSite.onLocal(({ wcId, url, kind }) => {
+    const key = `${wcId}|${tabByWcId(wcId)?.url || ''}`;
+    if (localToasted.has(key)) return;
+    localToasted.add(key);
+    let host = url;
+    try {
+      host = new URL(url).host;
+    } catch {}
+    toast(`🏠 이 사이트가 ${kind === 'loopback' ? '내 PC' : '같은 네트워크(공유기 등)'} 주소 ${host} 에 접속하려 해서 막았어요. 필요하면 주소창 🛡 에서 허용`);
+  });
   $('#shield-reload').addEventListener('click', () => {
     $('#shield-reload').hidden = true;
     $('#shield-pop').classList.remove('open');
@@ -153,13 +170,14 @@
     if (!r) return;
     const rows = [];
     for (const [site, e] of Object.entries(r.sites).sort()) {
-      const what = [e.shieldOff ? '차단 끔' : null, e.cookies3p ? '서드파티 쿠키 허용' : null].filter(Boolean).join(' · ');
+      const what = [e.shieldOff ? '차단 끔' : null, e.cookies3p ? '서드파티 쿠키 허용' : null, e.localNet ? '내 PC · 같은 네트워크 접속 허용' : null].filter(Boolean).join(' · ');
       rows.push(
         el('li', { class: 'set-row' }, el('span', {}, `${site} — ${what}`), el('button', {
           class: 'mini-btn',
           onclick: async () => {
             await jamSite.set({ site, key: 'shieldOff', value: false });
             await jamSite.set({ site, key: 'cookies3p', value: false });
+            await jamSite.set({ site, key: 'localNet', value: false });
             renderList();
           },
         }, '기본으로'))

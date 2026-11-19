@@ -113,4 +113,5 @@ contextBridge.exposeInMainWorld('jamSite', {
   onAsk: (cb) => ipcRenderer.on('perm:ask', (_e, info) => cb(info)),
   onClosed: (cb) => ipcRenderer.on('perm:closed', (_e, info) => cb(info)),
   onCount: (cb) => ipcRenderer.on('shield:count', (_e, info) => cb(info)),
+  onLocal: (cb) => ipcRenderer.on('shield:local', (_e, info) => cb(info)),
 });

@@ -152,6 +152,27 @@ const lastCookie = async () => (await (await fetch(`${OTHER}/lastck`)).json())?.
   if (trk4 !== 1) throw new Error('contentBlock off');
   step('settings: 추적 · 광고 차단 "끔" → tracker loads; back to 추적기 차단');
 
+  // 7. 인터넷 사이트(example.com)가 내 PC(127.0.0.1) · 공유기(192.168.0.1)를 부르면 막힘 → 🛡 에서 허용하면 됨
+  await A.ev(`navigateTab(activeTab, 'https://example.com/'); 1`);
+  await until('example.com', () => A.ev(`activeTab.url.startsWith('https://example.com') && !activeTab.loading`), 20000);
+  await sleep(800);
+  const probe = `(async () => { const r = {}; try { await fetch('${OTHER}/lastck', { mode: 'no-cors' }); r.pc = 'reached'; } catch { r.pc = 'blocked'; } try { const ws = new WebSocket('ws://127.0.0.1:${P.host}/'); r.ws = await new Promise((res) => { ws.onopen = () => res('open'); ws.onerror = () => res('blocked'); }); } catch { r.ws = 'blocked'; } return r; })()`;
+  W = await target(P.host, (x) => x.type === 'webview' && x.url.startsWith('https://example.com'));
+  const lna1 = await W.ev(probe);
+  W.close();
+  const lnaToast = await until('local toast', () => A.ev(`window.__toasts.find(t => t.includes('🏠'))`), 5000);
+  await A.ev(`${q('#shield-btn')}.click(); 1`);
+  const note = await until('local note', () => A.ev(`!${q('#shield-local-note')}.hidden && ${q('#shield-local-note')}.textContent`));
+  await A.ev(`${q('#shield-local')}.click(); 1`);
+  await sleep(300);
+  await A.ev(`${q('#shield-pop')}.classList.remove('open'); 1`);
+  W = await target(P.host, (x) => x.type === 'webview' && x.url.startsWith('https://example.com'));
+  const lna2 = await W.ev(probe);
+  W.close();
+  await A.ev(`jamSite.set({ site: 'example.com', key: 'localNet', value: false })`);
+  if (lna1.pc !== 'blocked' || lna1.ws !== 'blocked' || lna2.pc !== 'reached') throw new Error('local network ' + JSON.stringify({ lna1, lna2 }));
+  step(`internet page → my PC: fetch 127.0.0.1 ${lna1.pc}, WebSocket to 127.0.0.1 (debug port) ${lna1.ws} · toast "${lnaToast.slice(0, 50)}…" · 🛡 "${note.slice(0, 50)}…" → allowed for example.com → fetch ${lna2.pc}`);
+
   console.log('\nE2E siteguard OK');
   process.exit(0);
 })().catch((e) => {

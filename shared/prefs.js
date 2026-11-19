@@ -70,6 +70,7 @@
 
     // ---------- 보안 · 개인정보 ----------
     { key: 'httpsFirst', page: 'set-security', group: '접속', label: 'HTTPS 우선 (http 주소를 https 로 먼저 시도)', type: 'bool', def: true, main: true, help: 'https 가 안 되는 사이트만 http 로 열어요. 같은 네트워크(사설 IP · localhost)는 그대로' },
+    { key: 'blockLocalNet', page: 'set-security', group: '접속', label: '인터넷 사이트가 내 PC · 공유기 · 같은 네트워크 주소에 접속하는 것 막기', type: 'bool', def: true, main: true, help: '예) 어떤 사이트가 몰래 127.0.0.1 · localhost(내 PC 의 프로그램 · Jam 서버)나 192.168.0.1(공유기)을 부르면 막아요. 페이지 이동 자체와, 같은 네트워크에 있는 페이지는 그대로. 필요한 사이트는 🛡 에서 허용', warnOff: '끄면 인터넷 사이트가 내 PC 와 공유기에 요청을 보낼 수 있어요' },
     { key: 'contentBlock', page: 'set-security', group: '추적 · 광고 (주소창 🛡 에서 사이트마다 끌 수 있어요)', label: '차단', type: 'select', def: 'trackers', main: true, options: [['trackers', '추적기 차단 (권장 · 페이지 모양은 그대로)'], ['ads', '추적기 + 광고 차단'], ['off', '끔']], help: 'EasyPrivacy · uBlock 목록으로 웹페이지가 부르는 추적 · 광고 주소를 막아요. 광고까지 막으면 Jam 상대와 페이지 모양이 조금 다를 수 있어요', warnOff: '끄면 사이트를 옮겨 다니며 나를 추적하는 요청이 그대로 나가요' },
     { key: 'blockListHours', page: 'set-security', group: '추적 · 광고 (주소창 🛡 에서 사이트마다 끌 수 있어요)', label: '차단 목록 새로 받기', type: 'number', def: 24, min: 6, max: 168, unit: '시간마다', main: true },
     { key: 'thirdPartyCookies', page: 'set-security', group: '추적 · 광고 (주소창 🛡 에서 사이트마다 끌 수 있어요)', label: '서드파티 쿠키', type: 'select', def: 'block', main: true, options: [['block', '차단 (보고 있는 사이트의 쿠키만)'], ['allow', '허용']], help: '다른 회사가 여러 사이트에 심어 둔 쿠키로 나를 따라오는 것을 막아요. 로그인이 안 되는 사이트는 🛡 에서 그 사이트만 허용하세요' },
