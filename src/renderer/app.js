@@ -240,6 +240,26 @@ function wireWebview(tab) {
 }
 
 // Jam 동기화로 Jam 탭을 이동 (내가 누른 이동이 아니라는 표시를 남겨, 다운로드 링크면 막는다)
+// 📍 버튼: 누른 뒤 다음 클릭 자리에 핑 (화면 미러링을 보고 있으면 그 화면 위에)
+function setPingMode(on) {
+  jam.pingMode = !!on;
+  const b = $('#ov-ping');
+  if (b) b.classList.toggle('on', jam.pingMode);
+}
+document.getElementById('ov-ping').addEventListener('click', () => togglePingMode());
+function togglePingMode() {
+  if (!jam.active || !pref('pingEnabled')) return;
+  if (mirror.viewing()) return mirror.pingNext();
+  const t = jam.tab;
+  if (!t?.ready) return;
+  setPingMode(!jam.pingMode);
+  t.webview.send('jam:ping-mode', { on: jam.pingMode, k: 'here' });
+  if (jam.pingMode) {
+    activateTab(t);
+    toast('📍 핑을 찍을 곳을 클릭하세요 (Esc 로 취소 · 다음부터는 Alt+클릭)');
+  }
+}
+
 function followNavigate(url) {
   if (!jam.tab) return;
   if (!jamFiles.gate(url)) return; // 아직 안 받은 공유 파일 → 받을지 물어봄
@@ -1213,6 +1233,22 @@ function onJamPageEvent(tab, channel, data) {
     case 'jam:click':
       if (isShareable(url)) jam.send({ type: 'click', url, x: data.x, y: data.y, a: data.a });
       break;
+    case 'jam:ping': {
+      // 내가 찍은 핑: 모두에게 보내고 내 화면에도 표시
+      setPingMode(false);
+      if (!pref('pingEnabled') || !isShareable(url)) break;
+      const k = ['here', 'look', 'warn'].includes(data.k) ? data.k : 'here';
+      jam.send({ type: 'ping', url, x: data.x, y: data.y, a: data.a, k });
+      const me = jam.me();
+      tab.webview.send('jam:ping', { id: `me-${Date.now()}`, name: me?.name || '나', color: me?.color, x: data.x, y: data.y, a: data.a, k, sec: pref('pingSeconds') });
+      break;
+    }
+    case 'jam:ping-mode-off':
+      setPingMode(false);
+      break;
+    case 'jam:ping-shown':
+      (window.__pingsShown = window.__pingsShown || []).push(data); // 테스트 · 확인용
+      break;
     case 'jam:view-pos': {
       // 다른 사람 사각형이 내 문서에서 실제로 그려진 위치 (미니맵용)
       const m = jam.member(data.id);
@@ -1295,6 +1331,7 @@ function handleMessage(msg) {
     case 'mstat':
     case 'mstate':
     case 'mblock':
+    case 'mping':
       mirror.handle(msg); // 화면 미러링 (mirror.js)
       break;
     case 'file':
@@ -1375,6 +1412,18 @@ function handleMessage(msg) {
     case 'click': {
       const m = jam.member(msg.by);
       if (tab?.ready && m && sameDoc(msg.url, tab.url)) tab.webview.send('jam:click', { color: m.color, x: msg.x, y: msg.y, a: msg.a });
+      break;
+    }
+    case 'ping': {
+      // 다른 사람이 찍은 핑: 같은 페이지면 그 자리에, 아니면 알림
+      const m = jam.member(msg.by);
+      if (!m || !pref('pingEnabled')) break;
+      const icon = { here: '📍', look: '👀', warn: '⚠️' }[msg.k] || '📍';
+      if (tab?.ready && sameDoc(msg.url, tab.url)) {
+        tab.webview.send('jam:ping', { id: `${msg.by}-${Date.now()}`, name: m.name, color: m.color, x: msg.x, y: msg.y, a: msg.a, k: msg.k, sec: pref('pingSeconds') });
+      } else if (pref('pingToastOther')) {
+        toast(`${icon} ${m.name}님이 다른 페이지(${prettyUrl(msg.url)})에 핑을 찍었어요`);
+      }
       break;
     }
     case 'media':
