@@ -49,7 +49,7 @@ function isPrivateIp(raw) {
 
 const COLORS = ['#2ee6a6', '#ff6b6b', '#4dabf7', '#ffd43b', '#cc5de8', '#ff922b', '#20c997', '#f06595'];
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-const PING_KINDS = new Set(['here', 'look', 'warn']);
+const PING_KINDS = new Set(['here', 'what', 'look', 'warn', 'omw']); // 📍 여기 · ❓ 뭐지? · 👀 이거 봐 · ⚠️ 조심 · 🏃 갈게요
 const REACTIONS = ['👍', '😂', '😮', '❤️', '🔥', '👏'];
 
 function isWebUrl(u) {

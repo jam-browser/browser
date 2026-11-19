@@ -122,6 +122,9 @@ const prefs = (() => {
 
   build();
   push(); // 시작할 때 메인 프로세스에 알림
+  listeners.add((key) => {
+    if (!key || key.startsWith('ping')) pushPingConfig(); // 핑 설정은 탭에 바로
+  });
 
   return {
     get: (k) => values[k],

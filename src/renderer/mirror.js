@@ -622,6 +622,60 @@ const mirror = (() => {
     return { x, y };
   }
   let pingNextKind = null;
+  let gHeld = false;
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'KeyG' && view && document.activeElement === $('#mirror-canvas')) gHeld = true;
+  }, true);
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'KeyG') gHeld = false;
+  }, true);
+  // 핑 휠 (앱 화면 쪽, 미러 영상 위): 위 ⚠️ 조심 · 아래 ❓ 뭐지? · 오른쪽 👀 이거 봐 · 왼쪽 🏃 갈게요 · 그대로 📍 여기
+  const WHEEL = { here: [0, 0, '여기'], warn: [0, -60, '조심'], what: [0, 60, '뭐지?'], look: [60, 0, '이거 봐'], omw: [-60, 0, '갈게요'] };
+  const YELLOW_Q = '<svg viewBox="0 0 32 32" width="24" height="24"><circle cx="16" cy="16" r="14" fill="#ffd43b" stroke="#1d1d1d" stroke-width="2.4"/><ellipse cx="11.5" cy="9.5" rx="6" ry="3.2" fill="#fff" opacity=".38"/><path d="M11.6 12.4c0-2.7 2-4.5 4.5-4.5 2.6 0 4.5 1.7 4.5 3.9 0 3.5-4.3 3.6-4.3 6.9" fill="none" stroke="#1d1d1d" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round"/><circle cx="16.3" cy="23.7" r="2.1" fill="#1d1d1d"/></svg>';
+  function openWheel(x, y, done, quick) {
+    const cx = Math.min(Math.max(x, 96), Math.max(96, window.innerWidth - 96)); // 가장자리에서도 안 잘리게
+    const cy = Math.min(Math.max(y, 96), Math.max(96, window.innerHeight - 96));
+    const box = el('div', { class: 'ping-wheel', style: { left: `${cx}px`, top: `${cy}px` } }, el('div', { class: 'pw-disc' }));
+    const slices = {};
+    for (const [k, [dx, dy, label]] of Object.entries(WHEEL)) {
+      const icon = el('span', { class: 'pw-icon' });
+      if (k === 'what') icon.innerHTML = YELLOW_Q;
+      else icon.textContent = { here: '📍', warn: '⚠️', look: '👀', omw: '🏃' }[k];
+      slices[k] = el('div', { class: 'pw-slice', style: { left: `${dx - 30}px`, top: `${dy - 24}px` } }, icon, el('span', {}, label));
+      box.appendChild(slices[k]);
+    }
+    const dot = el('div', { class: 'pw-dot' });
+    box.appendChild(dot);
+    document.body.appendChild(box);
+    let k = quick || 'here';
+    const mark = () => Object.entries(slices).forEach(([kk, s]) => s.classList.toggle('on', kk === k));
+    mark();
+    const move = (e) => {
+      const dx = e.clientX - x;
+      const dy = e.clientY - y;
+      const d = Math.hypot(dx, dy);
+      const nk = d < 22 ? quick || 'here' : Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'look' : 'omw') : dy < 0 ? 'warn' : 'what';
+      const r = Math.min(70, d);
+      const a = Math.atan2(dy, dx);
+      dot.style.transform = `translate(${Math.cos(a) * r}px, ${Math.sin(a) * r}px)`;
+      if (nk !== k) {
+        k = nk;
+        mark();
+      }
+    };
+    const end = (send) => {
+      window.removeEventListener('mousemove', move, true);
+      window.removeEventListener('mouseup', up, true);
+      window.removeEventListener('keydown', esc, true);
+      box.remove();
+      if (send) done(k);
+    };
+    const up = (e) => e.button === 0 && end(true);
+    const esc = (e) => e.key === 'Escape' && end(false);
+    window.addEventListener('mousemove', move, true);
+    window.addEventListener('mouseup', up, true);
+    window.addEventListener('keydown', esc, true);
+  }
   let swallowUp = false;
   let lastMove = 0;
   let wheel = { dx: 0, dy: 0, timer: null, p: null };
@@ -645,14 +699,15 @@ const mirror = (() => {
       c.focus();
       if (e.button === 2) return;
       e.preventDefault();
-      // 핑: Alt+클릭 또는 📍 버튼 뒤 클릭 → 조작이 아니라 핑 (조작 권한이 없어도 돼요)
-      if (e.button === 0 && (e.altKey || pingNextKind) && pref('pingEnabled')) {
+      // 핑: 핑 키(Alt/G)를 누른 채 또는 📍 버튼 뒤 클릭 → 휠 (조작이 아니라 핑, 조작 권한이 없어도 돼요)
+      const held = pref('pingKey') === 'g' ? gHeld : e.altKey;
+      if (e.button === 0 && (held || pingNextKind) && pref('pingEnabled')) {
         const p = point(e);
-        if (p) jam.send({ type: 'mping', ...p, k: e.shiftKey ? 'warn' : pingNextKind || 'here' });
         pingNextKind = null;
         setPingMode(false);
         c.classList.remove('ping-mode');
         swallowUp = true;
+        if (p) openWheel(e.clientX, e.clientY, (k) => jam.send({ type: 'mping', ...p, k }), e.shiftKey ? 'warn' : null);
         return;
       }
       sendMouse('dn', e, { b: e.button === 1 ? 'middle' : 'left', c: e.detail || 1 });

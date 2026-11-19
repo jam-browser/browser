@@ -78,7 +78,12 @@ function client(port) {
   g.send({ type: 'ping', url: 'https://example.com/a', x: 7, y: -1, k: 'evil' });
   const p3 = await host.next('ping');
   assert.deepEqual([p3.x, p3.y, p3.k], [1, 0, 'here']);
-  ok('핑은 보낸 사람을 뺀 모두에게 · 좌표는 0~1 로, 모르는 종류는 📍(here) 로');
+  for (const k of ['what', 'look', 'warn', 'omw', 'here']) {
+    await sleep(550); // 도배 방지 한도 안에서
+    g.send({ type: 'ping', url: 'https://example.com/a', x: 0.5, y: 0.5, k });
+    assert.equal((await host.next('ping')).k, k);
+  }
+  ok('핑은 보낸 사람을 뺀 모두에게 · 좌표는 0~1 로, 휠의 5가지(📍 ❓ 👀 ⚠️ 🏃) 그대로, 모르는 종류는 📍(here) 로');
 
   // 2. 로그인 · 결제 주소, 이상한 주소의 핑은 안 보냄
   host.clear();
