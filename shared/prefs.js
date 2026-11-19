@@ -32,6 +32,9 @@
     { key: 'nearbyAnnounce', page: 'set-jam', group: '근처 찾기 (같은 네트워크, UDP 3032)', label: '내 Jam 을 근처에 알리기', type: 'bool', def: true, main: true, help: 'Jam 이름 · 호스트 이름 · 접속 주소만 알려요. 초대 비밀키는 보내지 않아요' },
     { key: 'nearbyScan', page: 'set-jam', group: '근처 찾기 (같은 네트워크, UDP 3032)', label: '근처 Jam 찾기', type: 'bool', def: true, main: true },
     { key: 'nearbyIntervalSec', page: 'set-jam', group: '근처 찾기 (같은 네트워크, UDP 3032)', label: '알림 간격', type: 'number', def: 2, min: 1, max: 30, unit: '초', main: true },
+    { key: 'pingEnabled', page: 'set-jam', group: '핑', label: '핑 찍기 · 보기', type: 'bool', def: true, help: 'Alt+클릭 = 📍 여기, Alt+Shift+클릭 = ⚠️ 조심, 오버레이의 📍 버튼을 누른 뒤 클릭해도 돼요' },
+    { key: 'pingSeconds', page: 'set-jam', group: '핑', label: '핑 표시 시간', type: 'number', def: 6, min: 2, max: 30, unit: '초' },
+    { key: 'pingToastOther', page: 'set-jam', group: '핑', label: '다른 페이지에서 찍은 핑은 알림으로', type: 'bool', def: true },
 
     // ---------- 화면 미러링 ----------
     { key: 'mirrorMaxRes', page: 'set-mirror', group: '화질', label: '최대 해상도', type: 'select', def: 'native', options: [['720', '1280×720'], ['1080', '1920×1080'], ['1440', '2560×1440'], ['native', '탭 원래 크기 (최대 3840×2160)']] },

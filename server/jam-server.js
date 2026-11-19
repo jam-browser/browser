@@ -49,6 +49,7 @@ function isPrivateIp(raw) {
 
 const COLORS = ['#2ee6a6', '#ff6b6b', '#4dabf7', '#ffd43b', '#cc5de8', '#ff922b', '#20c997', '#f06595'];
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const PING_KINDS = new Set(['here', 'look', 'warn']);
 const REACTIONS = ['👍', '😂', '😮', '❤️', '🔥', '👏'];
 
 function isWebUrl(u) {
@@ -927,6 +928,31 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           if (msg.x == null) return broadcast(room, { type: 'cursor', by: me.id, x: null }, ws);
           if (!isShareable(msg.url)) return;
           broadcast(room, { type: 'cursor', by: me.id, url: msg.url, x: ratio(msg.x), y: ratio(msg.y), a: anchor(msg.a) }, ws);
+          break;
+        }
+        // ---------- 핑: 화면의 한 곳을 모두에게 표시 (📍 여기 · 👀 봐요 · ⚠️ 조심) ----------
+        case 'ping':
+        case 'mping': {
+          // 도배 방지: 순간 6개, 초당 2개
+          const now = Date.now();
+          me.pingTokens = Math.min(6, (me.pingTokens ?? 6) + ((now - (me.pingAt || now)) / 1000) * 2);
+          me.pingAt = now;
+          if (me.pingTokens < 1) return;
+          me.pingTokens--;
+          const k = PING_KINDS.has(msg.k) ? msg.k : 'here';
+          if (msg.type === 'ping') {
+            if (!isShareable(msg.url)) return;
+            broadcast(room, { type: 'ping', by: me.id, url: msg.url, x: ratio(msg.x), y: ratio(msg.y), a: anchor(msg.a), k }, ws);
+          } else {
+            // 화면 미러링을 보는 사람의 핑 → 미러링하는 사람에게 (그 탭 위에 그려져서 영상으로 모두에게 보임)
+            const mir = room.mirror;
+            const owner = mir && room.members.get(mir.by);
+            if (!owner || owner === me) return;
+            const x = Number(msg.x);
+            const y = Number(msg.y);
+            if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) return;
+            send(owner.ws, { type: 'mping', by: me.id, x, y, k });
+          }
           break;
         }
         case 'click': {

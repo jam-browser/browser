@@ -1103,3 +1103,164 @@ function applyMirrorLayer() {
   layer.views.style.display = mirrorMode ? 'none' : '';
   layer.cursorsBox.style.display = mirrorMode ? 'none' : '';
 }
+
+// ======================================================================
+// 핑: Alt+클릭(📍) · Alt+Shift+클릭(⚠️) 또는 앱의 📍 버튼 → 다음 클릭 자리
+//  - 그 자리를 요소 기준(커서와 같은 앵커)으로 보내서, 창 크기가 달라도 같은 곳에 표시
+//  - 받은 핑은 반짝이는 표시 + 이름, 화면 밖이면 가장자리에 화살표(누르면 그 자리로 스크롤)
+//  - 화면 미러링 중에도 숨기지 않음 (영상에 같이 보여야 하므로)
+// ======================================================================
+const PING_ICON = { here: '📍', look: '👀', warn: '⚠️' };
+let pingMode = null; // { k } — 앱의 📍 버튼을 누른 뒤 다음 클릭
+let swallowClick = 0;
+let pingBox = null;
+let pingEdge = null;
+const pings = new Map(); // id → { el, edge, until, pos }
+
+function pingLayer() {
+  const l = getLayer();
+  if (!pingBox || !l.root.contains(pingBox)) {
+    pingBox = document.createElement('div');
+    pingEdge = css(document.createElement('div'), { position: 'fixed', inset: '0', 'pointer-events': 'none', 'z-index': '3' });
+    l.root.append(pingBox, pingEdge);
+  }
+  return l;
+}
+function setPingCursor(on) {
+  try {
+    document.documentElement.style.cursor = on ? 'crosshair' : '';
+  } catch {}
+}
+window.addEventListener(
+  'mousedown',
+  (e) => {
+    if (!e.isTrusted || e.button !== 0) return;
+    const mode = pingMode;
+    if (!mode && !e.altKey) return;
+    if (armedFor && armedFor('mouse')) return; // 화면 미러링 원격 조작은 핑이 아님
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    swallowClick = Date.now() + 1000; // 뒤따르는 click 도 페이지에 안 가게
+    const k = mode ? mode.k : e.shiftKey ? 'warn' : 'here';
+    pingMode = null;
+    setPingCursor(false);
+    const { w, h } = docSize();
+    send('jam:ping', { x: e.pageX / w, y: e.pageY / h, a: anchorAt(e.clientX, e.clientY), k });
+  },
+  true
+);
+window.addEventListener(
+  'click',
+  (e) => {
+    if (Date.now() < swallowClick) {
+      swallowClick = 0;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }
+  },
+  true
+);
+window.addEventListener(
+  'keydown',
+  (e) => {
+    if (pingMode && e.key === 'Escape') {
+      pingMode = null;
+      setPingCursor(false);
+      send('jam:ping-mode-off', {});
+    }
+  },
+  true
+);
+ipcRenderer.on('jam:ping-mode', (_e, d) => {
+  pingMode = d && d.on ? { k: PING_ICON[d.k] ? d.k : 'here' } : null;
+  setPingCursor(!!pingMode);
+});
+
+function placePing(id, pos, d) {
+  const { root } = pingLayer();
+  void root;
+  const old = pings.get(id);
+  if (old) {
+    old.el.remove();
+    old.edge.remove();
+  }
+  const color = /^#[0-9a-f]{6}$/i.test(d.color) ? d.color : '#2ee6a6';
+  const el = css(document.createElement('div'), { position: 'absolute', left: `${pos.x}px`, top: `${pos.y}px`, width: '0', height: '0' });
+  const ring = (delay) => {
+    const r = css(document.createElement('div'), {
+      position: 'absolute', left: '-22px', top: '-22px', width: '44px', height: '44px', 'border-radius': '50%',
+      border: `3px solid ${color}`, 'box-sizing': 'border-box', opacity: '0',
+    });
+    r.animate([{ transform: 'scale(.4)', opacity: 1 }, { transform: 'scale(1.9)', opacity: 0 }], { duration: 1100, delay, iterations: Infinity, easing: 'ease-out' });
+    return r;
+  };
+  const pin = css(document.createElement('div'), {
+    position: 'absolute', left: '-14px', top: '-32px', width: '28px', height: '28px', 'text-align': 'center',
+    font: '24px/28px "Segoe UI Emoji",sans-serif', filter: 'drop-shadow(0 2px 2px rgba(0,0,0,.45))',
+  });
+  pin.textContent = PING_ICON[d.k] || '📍';
+  pin.animate([{ transform: 'translateY(-14px)' }, { transform: 'translateY(0)' }], { duration: 320, easing: 'cubic-bezier(.3,1.6,.6,1)' });
+  const label = css(document.createElement('div'), {
+    position: 'absolute', left: '14px', top: '-30px', padding: '2px 8px', 'border-radius': '999px', 'white-space': 'nowrap',
+    background: color, color: '#0b0b0b', font: '600 12px/18px "Segoe UI","Malgun Gothic",sans-serif', 'box-shadow': '0 1px 4px rgba(0,0,0,.35)',
+  });
+  label.textContent = String(d.name || '').slice(0, 24);
+  el.append(ring(0), ring(450), pin, label);
+  pingBox.appendChild(el);
+  // 화면 밖이면 가장자리 화살표 (누르면 그 자리로)
+  const edge = css(document.createElement('div'), {
+    position: 'absolute', left: '50%', transform: 'translateX(-50%)', padding: '4px 12px', 'border-radius': '999px', display: 'none',
+    background: color, color: '#0b0b0b', font: '600 13px/20px "Segoe UI","Malgun Gothic",sans-serif', cursor: 'pointer',
+    'pointer-events': 'auto', 'box-shadow': '0 2px 8px rgba(0,0,0,.4)', 'white-space': 'nowrap',
+  });
+  edge.addEventListener('mousedown', (e) => e.preventDefault(), true);
+  edge.addEventListener('click', (e) => {
+    if (!e.isTrusted) return;
+    e.preventDefault();
+    e.stopPropagation();
+    window.scrollTo({ top: Math.max(0, pos.y - window.innerHeight / 2), left: Math.max(0, pos.x - window.innerWidth / 2), behavior: 'smooth' });
+  });
+  pingEdge.appendChild(edge);
+  const sec = Math.min(30, Math.max(2, Number(d.sec) || 6));
+  const rec = { el, edge, pos, icon: pin.textContent, name: label.textContent, until: Date.now() + sec * 1000 };
+  pings.set(id, rec);
+  updatePingEdges();
+  setTimeout(() => {
+    if (pings.get(id) !== rec) return;
+    pings.delete(id);
+    el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 300, fill: 'forwards' });
+    setTimeout(() => {
+      el.remove();
+      edge.remove();
+    }, 320);
+  }, sec * 1000);
+  const onscreen = pos.y >= window.scrollY && pos.y <= window.scrollY + window.innerHeight;
+  send('jam:ping-shown', { id, onscreen });
+}
+function updatePingEdges() {
+  for (const p of pings.values()) {
+    const vy = p.pos.y - window.scrollY;
+    if (vy < 0) {
+      css(p.edge, { display: 'block', top: '8px', bottom: '' });
+      p.edge.textContent = `▲ ${p.icon} ${p.name}`;
+    } else if (vy > window.innerHeight) {
+      css(p.edge, { display: 'block', top: '', bottom: '8px' });
+      p.edge.textContent = `▼ ${p.icon} ${p.name}`;
+    } else p.edge.style.display = 'none';
+  }
+}
+window.addEventListener('scroll', throttle(updatePingEdges, 80), { passive: true });
+
+// 받은 핑 (같은 페이지): 앵커로 자리를 찾고, 못 찾으면 문서 비율로
+ipcRenderer.on('jam:ping', (_e, d) => {
+  if (!d) return;
+  const { w, h } = docSize();
+  const pos = resolveAnchor(d.a) || { x: Number(d.x) * w, y: Number(d.y) * h };
+  placePing(String(d.id || Math.random()), pos, d);
+});
+// 화면 미러링 핑: 보는 사람이 찍은 자리 (보이는 화면 비율) → 이 탭 위에 그림 → 영상으로 모두에게
+ipcRenderer.on('jam:ping-view', (_e, d) => {
+  if (!d) return;
+  const pos = { x: window.scrollX + Number(d.vx) * window.innerWidth, y: window.scrollY + Number(d.vy) * window.innerHeight };
+  placePing(String(d.id || Math.random()), pos, d);
+});

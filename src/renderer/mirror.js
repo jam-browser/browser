@@ -621,6 +621,8 @@ const mirror = (() => {
     if (x < 0 || x > 1 || y < 0 || y > 1) return null;
     return { x, y };
   }
+  let pingNextKind = null;
+  let swallowUp = false;
   let lastMove = 0;
   let wheel = { dx: 0, dy: 0, timer: null, p: null };
   const held = new Set();
@@ -643,9 +645,23 @@ const mirror = (() => {
       c.focus();
       if (e.button === 2) return;
       e.preventDefault();
+      // 핑: Alt+클릭 또는 📍 버튼 뒤 클릭 → 조작이 아니라 핑 (조작 권한이 없어도 돼요)
+      if (e.button === 0 && (e.altKey || pingNextKind) && pref('pingEnabled')) {
+        const p = point(e);
+        if (p) jam.send({ type: 'mping', ...p, k: e.shiftKey ? 'warn' : pingNextKind || 'here' });
+        pingNextKind = null;
+        setPingMode(false);
+        c.classList.remove('ping-mode');
+        swallowUp = true;
+        return;
+      }
       sendMouse('dn', e, { b: e.button === 1 ? 'middle' : 'left', c: e.detail || 1 });
     });
     c.addEventListener('mouseup', (e) => {
+      if (swallowUp) {
+        swallowUp = false;
+        return;
+      }
       if (e.button === 2) return;
       sendMouse('up', e, { b: e.button === 1 ? 'middle' : 'left', c: e.detail || 1 });
     });
@@ -794,6 +810,14 @@ const mirror = (() => {
       case 'mv':
         onChunk(msg);
         break;
+      case 'mping': {
+        // 보는 사람이 찍은 핑 → 미러링 중인 탭 위에 그림 (영상으로 모두에게 보임)
+        const who = jam.member(msg.by);
+        if (host && host.tab?.ready && who && pref('pingEnabled')) {
+          host.tab.webview.send('jam:ping-view', { id: `m${msg.by}-${Date.now()}`, name: who.name, color: who.color, vx: msg.x, vy: msg.y, k: msg.k, sec: pref('pingSeconds') });
+        }
+        break;
+      }
       case 'mkey':
         if (host) kick(host);
         break;
@@ -852,6 +876,13 @@ const mirror = (() => {
   return {
     start, stop, handle, onWelcome, reset, render, controlSelect, revokeAll, onPageEvent,
     ownsTab: (tab) => !!host && host.tab === tab,
+    viewing: () => !!view && !view.hidden,
+    pingNext: () => {
+      pingNextKind = 'here';
+      setPingMode(true);
+      $('#mirror-canvas').classList.add('ping-mode');
+      toast('📍 핑을 찍을 곳을 화면에서 클릭하세요');
+    },
     isMirroring: () => !!host,
     stats: () => ({
       host: host && { frames: host.frames, sent: host.sent, w: host.w, h: host.h, fps: FPS[host.q.fpsI], rate: Math.round(host.q.rate), scale: host.q.scale, codec: host.codec.codec, paused: host.paused, secret: host.secret, cap: Math.round(host.q.cap), stat: host.stat },
