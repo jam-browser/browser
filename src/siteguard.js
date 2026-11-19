@@ -258,15 +258,24 @@ function setupSiteGuard({ app, ipcMain, net, webContents, getWindow, getPrefs, t
     if (!top || !req || top === req || siteEntry(top).cookies3p) return null;
     return t;
   }
-  function attach(ses) {
+  // headerHook(d, headers) → true 면 바꿈 (세션마다 리스너가 하나뿐이라 다른 헤더 손질도 여기서 함께: Google 로그인 화면 UA)
+  function attach(ses, { headerHook = null } = {}) {
     ses.webRequest.onBeforeSendHeaders({ urls: ['http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (d, cb) => {
-      if (!thirdParty(d)) return cb({});
       const h = { ...d.requestHeaders };
       let changed = false;
-      for (const k of Object.keys(h)) {
-        if (k.toLowerCase() === 'cookie') {
-          delete h[k];
-          changed = true;
+      if (headerHook) {
+        try {
+          changed = !!headerHook(d, h);
+        } catch (e) {
+          console.error('헤더 손질 오류:', e.message);
+        }
+      }
+      if (thirdParty(d)) {
+        for (const k of Object.keys(h)) {
+          if (k.toLowerCase() === 'cookie') {
+            delete h[k];
+            changed = true;
+          }
         }
       }
       cb(changed ? { requestHeaders: h } : {});

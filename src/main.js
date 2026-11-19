@@ -75,15 +75,81 @@ function chromeUaMetadata() {
     wow64: false,
   };
 }
-function applyChromeIdentity(contents) {
+// Google 로그인 화면(accounts.google.*)에서만 Firefox 로 보이기
+//  Google 은 Chrome 이라고 하는 브라우저에는 진짜 Chrome 인지 페이지 안에서 여러 가지를 더 확인해서, Electron 기반 브라우저는
+//  브랜드 정보를 맞춰도 "안전하지 않은 브라우저" 로 막힐 수 있음. Firefox 에는 그 확인을 하지 않음
+//  (Ferdium · Min 같은 Electron 브라우저가 쓰는 방법). 로그인을 마치고 다른 주소로 가면 다시 Chrome 으로
+const FIREFOX_UA = (() => {
+  // Firefox 는 4주마다 새 버전 (128 = 2024-07-09). 너무 앞서지 않게 하나 낮춤
+  const v = 128 + Math.max(0, Math.floor((Date.now() - Date.UTC(2024, 6, 9)) / (28 * 864e5)) - 1);
+  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:${v}.0) Gecko/20100101 Firefox/${v}.0`;
+})();
+const isGoogleSignin = (u) => {
+  try {
+    const h = new URL(u).hostname;
+    return /^accounts\.google\.[a-z]{2,3}(\.[a-z]{2})?$/.test(h) || h === 'accounts.youtube.com';
+  } catch {
+    return false;
+  }
+};
+// 페이지 안(모든 프레임, 페이지 스크립트보다 먼저): 로그인 화면에서만 Chrome 전용 값을 Firefox 처럼
+const SIGNIN_SHIM = `(() => { try {
+  if (!/^accounts\\.(google\\.[a-z.]+|youtube\\.com)$/.test(location.hostname)) return;
+  const def = (o, k, v) => { try { Object.defineProperty(o, k, { get: () => v, configurable: true }); } catch {} };
+  const N = Navigator.prototype;
+  def(N, 'userAgent', ${JSON.stringify(FIREFOX_UA)});
+  def(N, 'appVersion', '5.0 (Windows)');
+  def(N, 'platform', 'Win32');
+  def(N, 'oscpu', 'Windows NT 10.0; Win64; x64');
+  def(N, 'userAgentData', undefined);
+  def(N, 'vendor', '');
+  def(N, 'productSub', '20100101');
+} catch {} })();`;
+const identityOf = new Map(); // webContents id → 'chrome' | 'firefox'
+function setIdentity(contents, mode) {
+  identityOf.set(contents.id, mode);
   try {
     if (!contents.debugger.isAttached()) contents.debugger.attach('1.3');
-    contents.debugger
-      .sendCommand('Emulation.setUserAgentOverride', { userAgent: CHROME_UA, userAgentMetadata: chromeUaMetadata() })
-      .catch((e) => console.error('UA 설정 실패:', e.message));
   } catch (e) {
     console.error('UA 설정 실패:', e.message); // 개발자 도구가 이미 붙어 있는 경우 등 — 그래도 UA 문자열은 Chrome
+    return Promise.resolve();
   }
+  const params = mode === 'firefox' ? { userAgent: FIREFOX_UA, platform: 'Win32' } : { userAgent: CHROME_UA, userAgentMetadata: chromeUaMetadata() };
+  return contents.debugger.sendCommand('Emulation.setUserAgentOverride', params).catch((e) => console.error('UA 설정 실패:', e.message));
+}
+function applyChromeIdentity(contents) {
+  setIdentity(contents, 'chrome');
+  if (contents.debugger.isAttached()) {
+    contents.debugger.sendCommand('Page.enable').catch(() => {});
+    contents.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: SIGNIN_SHIM }).catch(() => {});
+  }
+  contents.once('destroyed', () => identityOf.delete(contents.id));
+}
+// 요청 헤더: 로그인 화면(또는 로그인 화면을 연 탭의 요청)이면 Firefox UA, Chrome 전용 헤더(Sec-CH-UA*) 빼기
+function signinHeaders(d, h) {
+  if (!Number.isInteger(d.webContentsId)) return false;
+  const mode = identityOf.get(d.webContentsId);
+  if (mode === 'firefox') {
+    for (const k of Object.keys(h)) {
+      const l = k.toLowerCase();
+      if (l === 'user-agent') h[k] = FIREFOX_UA;
+      else if (l.startsWith('sec-ch-ua')) delete h[k];
+    }
+    return true;
+  }
+  // 로그인 화면에서 막 나온 첫 요청: UA 바꾸기가 아직 안 끝나 Firefox 로 나가려 하면 Chrome 헤더로 되돌림
+  const uaKey = Object.keys(h).find((k) => k.toLowerCase() === 'user-agent');
+  if (mode === 'chrome' && uaKey && /Firefox\//.test(h[uaKey])) {
+    h[uaKey] = CHROME_UA;
+    if (d.url.startsWith('https:')) {
+      const m = chromeUaMetadata();
+      h['sec-ch-ua'] = m.brands.map((b) => `"${b.brand}";v="${b.version}"`).join(', ');
+      h['sec-ch-ua-mobile'] = '?0';
+      h['sec-ch-ua-platform'] = `"${m.platform}"`;
+    }
+    return true;
+  }
+  return false;
 }
 
 // Jam 탭의 webContents id → 다른 사이트 이동이 잠겨 있는지
@@ -1050,7 +1116,7 @@ app.whenReady().then(() => {
   };
   // 사이트 보호: 추적기 · 광고 차단, 서드파티 쿠키, 사이트 권한(위치 · 알림 · 카메라 · 마이크 …)
   siteGuard = setupSiteGuard({ app, ipcMain, net, webContents, getWindow: () => mainWindow, getPrefs: () => prefs, testMode: process.env.JAM_TEST_OFFSCREEN === '1' });
-  siteGuard.attach(ses);
+  siteGuard.attach(ses, { headerHook: signinHeaders });
   siteGuard.applyPrefs();
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
     notifyClipboard(wc, permission);
@@ -1071,6 +1137,19 @@ app.whenReady().then(() => {
   jamFilesApi.setLimits(prefs);
   // 요청 검사는 하나로 (세션마다 리스너가 하나뿐): jamfile:// 를 웹페이지가 불러오는 것 막기 + HTTPS 우선 + 추적기 · 광고 차단
   ses.webRequest.onBeforeRequest({ urls: ['jamfile://*/*', 'http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (d, cb) => {
+    // Google 로그인 화면으로 가거나 나오는 페이지 이동: 그 탭의 UA 를 먼저 바꾼 뒤 이어서 처리
+    if (d.resourceType === 'mainFrame' && Number.isInteger(d.webContentsId)) {
+      const wc = webContents.fromId(d.webContentsId);
+      if (wc && !wc.isDestroyed() && wc.getType() === 'webview') {
+        const want = isGoogleSignin(d.url) ? 'firefox' : 'chrome';
+        // 요청을 붙잡고 기다리면 안 됨 (UA 바꾸기가 이 페이지 이동이 끝나기를 기다려서 서로 멈춤) → 같이 진행.
+        // 이 요청의 헤더는 signinHeaders 가, 페이지 안 값은 SIGNIN_SHIM 이 맞춰 줌
+        if (identityOf.get(wc.id) !== want) setIdentity(wc, want);
+      }
+    }
+    handleRequest(d, cb);
+  });
+  function handleRequest(d, cb) {
     if (d.url.startsWith('jamfile:')) return cb({ cancel: jamFilesApi.blockedRequest(d) });
     let blocked = null;
     try {
@@ -1092,7 +1171,7 @@ app.whenReady().then(() => {
       }
     }
     cb({});
-  });
+  }
   vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched, getPrefs: () => prefs, fetch: (u, o) => net.fetch(u, o) });
   createWindow();
   startNearbyScanner();
