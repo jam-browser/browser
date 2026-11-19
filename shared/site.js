@@ -11,6 +11,37 @@
   // co.kr, or.kr, com.au, co.uk 같은 2단계 도메인
   const SECOND_LEVEL = new Set(['co', 'or', 'go', 'ac', 'ne', 're', 'pe', 'com', 'net', 'org', 'gov', 'edu', 'mil']);
 
+  // 내 PC(루프백) · 같은 네트워크(사설) 주소인지: 'loopback' | 'private' | null
+  //  URL 파서가 2130706433 · 0x7f.1 같은 이상한 IPv4 표기도 127.0.0.1 로 바꿔 주므로 hostname 만 보면 됨
+  function localKind(hostname) {
+    let h = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+    if (!h) return null;
+    if (h === 'localhost' || h.endsWith('.localhost')) return 'loopback';
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(h);
+    if (mapped) h = mapped[1];
+    // URL 파서는 [::ffff:192.168.0.1] 을 [::ffff:c0a8:1] 로 바꿈 → 다시 IPv4 로
+    const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
+    if (hex) {
+      const x = parseInt(hex[1], 16);
+      const y = parseInt(hex[2], 16);
+      h = `${x >> 8}.${x & 255}.${y >> 8}.${y & 255}`;
+    }
+    const m =/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h);
+    if (m) {
+      const [a, b] = [Number(m[1]), Number(m[2])];
+      if (a === 127) return 'loopback';
+      if (a === 0) return 'loopback'; // 0.0.0.0 은 내 PC 로 감
+      if (a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || (a === 100 && b >= 64 && b <= 127)) return 'private';
+      return null;
+    }
+    if (h.includes(':')) {
+      if (h === '::1' || h === '::') return 'loopback';
+      if (/^f[cd][0-9a-f]{0,2}:/.test(h) || /^fe[89ab][0-9a-f]?:/.test(h)) return 'private';
+      return null;
+    }
+    return null;
+  }
+
   function siteOf(u) {
     let host;
     try {
@@ -145,6 +176,7 @@
   }
 
   const api = { siteOf, sameSite, isSensitiveUrl, docKey, sameDoc, httpsUpgrade, lookalikeOf, skeleton };
+  api.localKind = localKind;
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.JamSite = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

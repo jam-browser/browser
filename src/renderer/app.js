@@ -246,7 +246,12 @@ const PING_KINDS = ['here', 'what', 'look', 'warn', 'omw'];
 const PING_TEXT = { here: '📍', what: '❓', look: '👀', warn: '⚠️', omw: '🏃' };
 // 각 탭에 핑 설정을 알림: Jam 탭에서만 켜짐 (다른 탭의 Alt+클릭은 그대로 페이지로)
 const pingCfgSent = new WeakMap();
+let lastBusy = null;
 function pushPingConfig(only) {
+  if (!only && lastBusy !== !!jam.active && jamApp.setBusy) {
+    lastBusy = !!jam.active;
+    jamApp.setBusy(lastBusy); // Jam 중에는 "쓰지 않을 때 업데이트" 재시작 안 함
+  }
   for (const t of only ? [only] : tabs) {
     if (!t.ready && !only) continue;
     const cfg = { on: !!(pref('pingEnabled') && jam.active && t === jam.tab), key: pref('pingKey') };
@@ -292,7 +297,10 @@ function navigateTab(tab, url) {
   if (tab === activeTab) updateToolbar();
 }
 
+let lastTabActivateAt = 0;
 function activateTab(tab) {
+  if (!tab) return;
+  lastTabActivateAt = Date.now();
   const wasJam = activeTab && activeTab === jam.tab;
   activeTab = tab;
   for (const t of tabs) t.webview.classList.toggle('inactive', t !== tab);
@@ -312,12 +320,20 @@ function activateTab(tab) {
 }
 
 // 확장 프로그램에 지금 보고 있는 탭을 알린다 (아직 webview 가 안 붙었으면 붙은 뒤에)
+let lastExtNotified = null;
 function notifyExtActiveTab(tab) {
   const id = tabWcId(tab);
-  if (id != null) return jamApp.extTabActivated(id);
+  if (id != null) {
+    if (id === lastExtNotified) return; // 같은 탭을 또 알리지 않음
+    lastExtNotified = id;
+    return jamApp.extTabActivated(id);
+  }
   tab.webview.addEventListener('did-attach', () => {
     const wcId = tabWcId(tab);
-    if (tab === activeTab && wcId != null) jamApp.extTabActivated(wcId);
+    if (tab === activeTab && wcId != null && wcId !== lastExtNotified) {
+      lastExtNotified = wcId;
+      jamApp.extTabActivated(wcId);
+    }
   }, { once: true });
 }
 
@@ -402,6 +418,7 @@ function updateToolbar() {
   $('#jam-tab-flag').hidden = t !== jam.tab;
   $('#lock-flag').hidden = !(t === jam.tab && jam.active && !jam.canCrossSite());
   $('#add-to-queue').disabled = !jam.active || !isShareable(t.url);
+  if (typeof updateShield === 'function') updateShield();
 }
 
 // ---------- 주소창 / 버튼 ----------
@@ -434,9 +451,22 @@ jamApp.onExtCreateTab(({ reqId, url, active }) => {
   const tab = createTab(url || ui.newTabUrl(), { activate: active });
   tab.webview.addEventListener('did-attach', () => jamApp.extTabCreated(reqId, tabWcId(tab)), { once: true });
 });
+// 확장 프로그램이 탭을 고름 (chrome.tabs.update active). 고리 방지:
+//  - 방금(0.8초 안) 내가 탭을 바꿨으면 늦게 도착한 옛 알림으로 보고 무시
+//  - 3초에 3번 넘게 오면 그 뒤로는 무시 (확장 프로그램이 탭을 계속 바꾸는 경우)
+let extSelects = [];
 jamApp.onExtSelectTab((wcId) => {
+  lastExtNotified = wcId; // 확장 프로그램 쪽은 이제 이 탭이 지금 탭이라고 알고 있음
   const tab = tabByWcId(wcId);
-  if (tab && tab !== activeTab) activateTab(tab);
+  if (!tab || tab === activeTab) return;
+  const now = Date.now();
+  extSelects = extSelects.filter((t) => now - t < 3000);
+  if (now - lastTabActivateAt < 800 || extSelects.length >= 3) {
+    if (extSelects.length >= 3) console.warn('확장 프로그램의 탭 바꾸기가 너무 잦아서 무시했어요');
+    return notifyExtActiveTab(activeTab); // 무시하면 확장 프로그램 쪽에도 실제 지금 탭을 다시 알려 줌 (되돌아오지 않음)
+  }
+  extSelects.push(now);
+  activateTab(tab);
 });
 jamApp.onExtCloseTab((wcId) => {
   const tab = tabByWcId(wcId);
@@ -809,7 +839,8 @@ async function startJam() {
     const { ws, welcome, keys } = await connect(
       serverUrl,
       // allow: 친구 신원 지문 목록 → 내 PC 의 Jam 서버에만 전달 (참여자 · 중계 서버로는 나가지 않음)
-      { type: 'create', name, url: tab.url, title: tab.title, access, allow: account.friendFps() },
+      // self: 내 계정 지문 → 같은 계정의 다른 기기는 승인 없이 (다른 기기에서 이어 보기)
+      { type: 'create', name, url: tab.url, title: tab.title, access, allow: account.friendFps(), self: account.selfFp() },
       { secret }
     );
     jam.serverUrl = serverUrl;
@@ -821,6 +852,7 @@ async function startJam() {
       ? `${relay?.route ? '같은 네트워크 친구용' : '다른 네트워크 주소'}: ${altHosts.map((h) => `${h}/${code}/${secret}`).join(', ')}`
       : '';
     renderJam();
+    if (relay?.route && window.jamResume) jamResume.publish(jam.invite, tab.title);
     toast('Jam을 시작했어요! 초대 코드를 친구에게 보내세요');
   } catch (err) {
     console.error(err);
@@ -1562,7 +1594,7 @@ function renderMembers(force = false) {
     canView: m.id !== jam.you.id && m.view && jam.tab && sameDoc(m.view.url, jam.tab.url),
   }));
   // 내용이 같으면 다시 그리지 않는다 (버튼 클릭이 끊기지 않게)
-  const key = JSON.stringify([host, jam.room.hostId, jam.room.settings, !!jam.room.mirror, mirror.isMirroring(), rows.map((r) => [r.m.id, r.m.name, r.m.canCrossSite, r.status, !!r.canView, !!r.m.friend, !!r.m.verified, JSON.stringify(r.m.control)])]);
+  const key = JSON.stringify([host, jam.room.hostId, jam.room.settings, !!jam.room.mirror, mirror.isMirroring(), rows.map((r) => [r.m.id, r.m.name, r.m.canCrossSite, r.status, !!r.canView, !!r.m.friend, !!r.m.self, !!r.m.verified, JSON.stringify(r.m.control)])]);
   if (!force && key === membersKey) return;
   membersKey = key;
 
@@ -1584,7 +1616,9 @@ function renderMembers(force = false) {
             m.name,
             isMe ? el('span', { class: 'muted' }, ' (나)') : null,
             isRoomHost ? el('span', { class: 'tag' }, '👑') : null,
-            m.friend
+            m.self
+              ? el('span', { class: 'badge-friend', title: '호스트와 같은 브라우저 계정 (다른 기기, 서명으로 확인됨)' }, '💻')
+              : m.friend
               ? el('span', { class: 'badge-friend', title: '호스트의 친구 (서명으로 본인 확인됨)' }, '⭐')
               : m.verified
                 ? el('span', { class: 'badge-friend', title: '브라우저 계정 서명으로 본인 확인됨' }, '🔏')

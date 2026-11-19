@@ -648,6 +648,7 @@ let manualCheck = false; // 메뉴에서 직접 누른 확인만 "최신이에�
 function updateMenuLabel() {
   if (lastUpdate.state === 'ready') return `재시작해서 ${lastUpdate.version} 로 업데이트`;
   if (lastUpdate.state === 'downloading') return `업데이트 받는 중… ${lastUpdate.percent || 0}%`;
+  if (lastUpdate.state === 'verifying') return '업데이트 서명 확인 중…';
   return '업데이트 확인';
 }
 function checkForUpdate() {
@@ -663,8 +664,11 @@ jamApp.onUpdate((s) => {
   lastUpdate = s;
   if (s.state === 'downloading' && prev !== 'downloading') toast(`⬇ 새 버전 ${s.version} 을(를) 받고 있어요`);
   if (s.state === 'ready') {
-    toast(`✅ 새 버전 ${s.version} 준비 완료 · 앱을 다시 켜면 적용돼요`, [{ label: '지금 재시작', fn: () => jamApp.installUpdate() }]);
+    const when = { idle: '쓰지 않을 때 자동으로 다시 켜서 적용돼요', manual: '"지금 재시작" 을 누르면 적용돼요' }[s.install] || '앱을 다시 켜면 적용돼요';
+    toast(`✅ 새 버전 ${s.version} 준비 완료 (서명 확인됨) · ${when}`, [{ label: '지금 재시작', fn: () => jamApp.installUpdate() }]);
   }
+  if (s.state === 'available') toast(`새 버전 ${s.version} 이 있어요 (자동 받기 꺼짐)`, [{ label: '받기', fn: () => jamApp.checkUpdate() }]);
+  if (s.state === 'error' && s.verifyFailed) toast(`⚠️ ${s.message}`); // 서명이 안 맞는 업데이트는 항상 알림
   if (s.state === 'latest' && prev === 'checking' && manualCheck) toast(`최신 버전(${s.version})이에요`);
   if (s.state === 'error' && manualCheck) toast('업데이트 확인에 실패했어요');
   if (s.state !== 'checking') manualCheck = false;
@@ -672,7 +676,7 @@ jamApp.onUpdate((s) => {
 });
 function renderVersion() {
   jamApp.appInfo().then((info) => {
-    const st = { ready: '· 재시작하면 업데이트', downloading: '· 업데이트 받는 중', latest: '· 최신 버전', error: '· 업데이트 확인 실패' }[lastUpdate.state] || '';
+    const st = { ready: '· 재시작하면 업데이트', downloading: '· 업데이트 받는 중', verifying: '· 업데이트 서명 확인 중', available: '· 새 버전 있음', latest: '· 최신 버전', error: lastUpdate.verifyFailed ? '· 업데이트 서명 확인 실패' : '· 업데이트 확인 실패' }[lastUpdate.state] || '';
     $('#app-version').textContent = `Jam Browser ${info.version} ${info.packaged ? st : '(개발 실행)'}`;
   });
 }

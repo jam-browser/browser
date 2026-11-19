@@ -79,17 +79,7 @@ const mirror = (() => {
     if (!('VideoEncoder' in window) || !('MediaStreamTrackProcessor' in window)) return toast('이 버전에서는 화면 미러링을 쓸 수 없어요');
     if (!window.__mirrorNoConfirm && !confirm('지금 탭의 화면을 Jam 참여자에게 영상으로 보여 줄까요?\n\n· 이 탭에 로그인한 화면이 그대로 보여요\n· 다른 탭 · 앱 화면 · 바탕화면은 보이지 않아요\n· 소리는 보내지 않아요\n· 글자 칸에 입력하는 동안 · 비밀번호 칸 · 로그인/결제 화면에서는 영상이 잠시 멈춰요')) return;
     try {
-      const id = await jamApp.mirrorSourceId(tab.webview.getWebContentsId());
-      // 탭의 실제 크기(화면 배율 포함)로 잡고, 설정한 최대 해상도를 넘으면 비율을 지켜 줄임 (작은 탭을 4K 로 늘려 보내지 않게)
-      const dpr = window.devicePixelRatio || 1;
-      const [cw, ch] = RES[pref('mirrorMaxRes')] || RES.native;
-      const tw = Math.max(320, Math.round(tab.webview.clientWidth * dpr));
-      const th = Math.max(180, Math.round(tab.webview.clientHeight * dpr));
-      const fit = Math.min(1, cw / tw, ch / th);
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: id, maxWidth: Math.round(tw * fit) & ~1, maxHeight: Math.round(th * fit) & ~1, maxFrameRate: Number(pref('mirrorMaxFps')) } },
-      });
+      const stream = await capture(tab);
       const track = stream.getVideoTracks()[0];
       const s = track.getSettings();
       const codec = await pickCodec((s.width || 1280) & ~1, (s.height || 720) & ~1);
@@ -99,13 +89,20 @@ const mirror = (() => {
         lastEncTs: -1e12, lastKeyAt: 0, lastFrame: null, tsOffset: 0, localDrops: 0, reconf: false,
         paused: null, secret: false, focus: null, typingUntil: 0, stat: null, kickTimer: null, typeTimer: null, canvas: null,
         lastBlock: new Map(),
+        gen: 0, size: tabSize(tab), ro: null, resizeTimer: null,
       };
       host = h;
+      // 호스트 탭 크기가 바뀌면 (패널 열고 닫기 · 창 크기) 새 크기로 다시 잡음 — 안 그러면 영상 비율이 어긋나 눌려 보임
+      h.ro = new ResizeObserver(() => {
+        clearTimeout(h.resizeTimer);
+        h.resizeTimer = setTimeout(() => recapture(h), 350);
+      });
+      h.ro.observe(tab.webview);
       h.onReady = () => tab.webview.send('jam:mirror-mode', true);
       tab.webview.addEventListener('dom-ready', h.onReady);
       tab.webview.send('jam:mirror-mode', true);
       jam.send({ type: 'mirror-start', sid: h.sid, w: s.width || 1280, h: s.height || 720, title: tab.title || prettyUrl(tab.url) });
-      pump(h);
+      pump(h, h.gen);
       clearInterval(guardTimer);
       guardTimer = setInterval(guard, 1000);
       updatePrivacy(h);
@@ -117,7 +114,59 @@ const mirror = (() => {
     }
   }
 
-  async function pump(h) {
+  // 탭 크기 (화면 배율 포함, 최대 해상도 설정 안에서 비율 그대로)
+  function tabSize(tab) {
+    const dpr = window.devicePixelRatio || 1;
+    const [cw, ch] = RES[pref('mirrorMaxRes')] || RES.native;
+    const tw = Math.max(320, Math.round(tab.webview.clientWidth * dpr));
+    const th = Math.max(180, Math.round(tab.webview.clientHeight * dpr));
+    const fit = Math.min(1, cw / tw, ch / th);
+    return { w: Math.round(tw * fit) & ~1, h: Math.round(th * fit) & ~1 };
+  }
+  // 그 탭(webview)만 잡기 — 앱 화면 · 다른 탭 · 바탕화면은 안 잡힘, 소리 없음
+  async function capture(tab) {
+    const id = await jamApp.mirrorSourceId(tab.webview.getWebContentsId());
+    const { w, h } = tabSize(tab);
+    return navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: id, maxWidth: w, maxHeight: h, minWidth: Math.min(w, 320), minHeight: Math.min(h, 180), maxFrameRate: Number(pref('mirrorMaxFps')) } },
+    });
+  }
+  // 탭 크기가 바뀌면 새 크기로 다시 잡고, 예전 것은 닫음 (영상은 다음 키프레임부터 새 크기)
+  async function recapture(h) {
+    if (host !== h || !h.tab?.webview) return;
+    const size = tabSize(h.tab);
+    if (Math.abs(size.w - h.size.w) < 8 && Math.abs(size.h - h.size.h) < 8) return;
+    if (h.recapturing) return void (h.recaptureAgain = true);
+    h.recapturing = true;
+    try {
+      // 예전 캡처를 먼저 닫아야 새 크기로 잡혀요 (같은 탭을 두 번 잡고 있으면 작은 쪽 크기에 맞춰짐)
+      h.gen++;
+      try { h.reader?.cancel(); } catch {}
+      try { h.track.stop(); } catch {}
+      const stream = await capture(h.tab);
+      if (host !== h) {
+        stream.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      Object.assign(h, { stream, track: stream.getVideoTracks()[0], size, needKey: true });
+      pump(h, h.gen);
+    } catch (e) {
+      console.error(`mirror #9: ${e && e.name}: ${e && e.message}`);
+      if (host === h) {
+        toast('탭 크기가 바뀐 뒤 화면을 다시 잡지 못해서 화면 미러링을 멈췄어요');
+        stop();
+      }
+    } finally {
+      h.recapturing = false;
+      if (h.recaptureAgain) {
+        h.recaptureAgain = false;
+        recapture(h);
+      }
+    }
+  }
+
+  async function pump(h, gen) {
     let reader;
     try {
       reader = new MediaStreamTrackProcessor({ track: h.track }).readable.getReader();
@@ -126,7 +175,7 @@ const mirror = (() => {
       return stop();
     }
     h.reader = reader;
-    while (host === h) {
+    while (host === h && h.gen === gen) {
       let r;
       try {
         r = await reader.read();
@@ -153,7 +202,7 @@ const mirror = (() => {
         frame.close();
       }
     }
-    if (host === h) {
+    if (host === h && h.gen === gen) {
       toast('미러링하던 탭이 닫혀서 화면 미러링을 멈췄어요');
       stop();
     }
@@ -328,6 +377,8 @@ const mirror = (() => {
     if (h) {
       clearTimeout(h.kickTimer);
       clearTimeout(h.typeTimer);
+      clearTimeout(h.resizeTimer);
+      try { h.ro?.disconnect(); } catch {}
       try { h.reader?.cancel(); } catch {}
       try { h.track.stop(); } catch {}
       try { h.encoder?.close(); } catch {}

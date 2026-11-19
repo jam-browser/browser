@@ -478,6 +478,14 @@ body.fullscreen #app { grid-template-columns: minmax(0,1fr) !important; grid-tem
 .login-row .l-site { font-weight: 700; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .login-row .l-user { color: var(--muted); font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .login-row .l-pw { font-family: Consolas, monospace; font-size: 12px; color: var(--accent); user-select: all; }
+.login-row .l-health { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+.pw-tag { font-size: 11px; padding: 1px 6px; border-radius: 6px; background: var(--bg-3); color: var(--muted); }
+.pw-tag.bad { color: var(--danger); background: rgba(255,107,107,.12); }
+.pw-tag.warn { color: #ffd43b; background: rgba(255,212,59,.12); }
+.pw-health { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; background: var(--bg-3); border-radius: 10px; padding: 8px 12px; font-size: 13px; }
+.pw-health[hidden] { display: none; }
+.pw-health #pw-health-text { flex: 1; min-width: 0; }
+.pw-health-only { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 12px; }
 #vault-dialog .about-box { display: flex; flex-direction: column; gap: 8px; }
 #vault-dialog .about-box input { height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); }
 #vault-dialog .about-box ul { margin: 0; padding-left: 18px; line-height: 1.6; }
@@ -569,3 +577,20 @@ select.mirror-keys { max-width: 100%; height: 26px; border-radius: 6px; border: 
 .ping-wheel .pw-slice.on { transform: scale(1.18); background: rgba(255,212,59,.28); }
 .ping-wheel .pw-icon { font: 21px/24px "Segoe UI Emoji",sans-serif; height: 24px; }
 .ping-wheel .pw-dot { position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: #fff; opacity: .8; }
+.pw-health .pw-bad { color: #ffd43b; }
+
+/* ---------- 사이트 보호 (🛡) · 권한 묻기 ---------- */
+#shield-wrap { display: flex; align-items: center; }
+#shield-wrap[hidden] { display: none; }
+.shield-btn { position: relative; border: 0; background: transparent; color: var(--text); font-size: 14px; padding: 0 2px; cursor: pointer; line-height: 1; }
+.shield-count { position: absolute; top: -7px; right: -9px; min-width: 15px; height: 15px; padding: 0 3px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-size: 9px; font-weight: 800; line-height: 15px; text-align: center; }
+.shield-pop { left: -10px; right: auto; top: 30px; width: 340px; }
+.shield-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13px; }
+.shield-row select { height: 28px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg-3); color: var(--text); }
+.shield-hosts { list-style: none; margin: 0 0 8px; padding: 0; max-height: 140px; overflow-y: auto; font-size: 12px; }
+.shield-hosts li { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.shield-hosts:empty { display: none; }
+.perm-banner { top: 58px; }
+.site-guard-box { margin-top: 8px; }
+#resume-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+#resume-box[hidden] { display: none; }

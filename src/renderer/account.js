@@ -5,6 +5,7 @@
 
 const account = (() => {
   let state = { exists: false, unlocked: false, name: null, hasSecretKeyHere: false };
+  let selfFp = null; // 내 계정 신원 지문 (다른 기기에서 이어 보기: 호스트가 같은 계정 기기를 바로 들여보냄)
   let friendsCache = [];
   let gateResolve = null;
   let revealTimer = null;
@@ -33,6 +34,7 @@ const account = (() => {
   }
 
   async function refresh() {
+    const wasUnlocked = state.unlocked;
     try {
       state = await jamVault.status();
     } catch {}
@@ -47,8 +49,13 @@ const account = (() => {
       friendsCache = await jamVault.friends().catch(() => []);
       const nameInput = $('#name');
       if (nameInput && !nameInput.value.trim()) nameInput.value = state.name || '';
-    } else friendsCache = [];
+      selfFp = (await jamVault.identity().catch(() => null))?.fp || null;
+    } else {
+      friendsCache = [];
+      selfFp = null;
+    }
     updateAccessHint();
+    if (state.unlocked && !wasUnlocked) document.dispatchEvent(new Event('jam-account-unlocked'));
     return state;
   }
 
@@ -308,10 +315,61 @@ const account = (() => {
   }
 
   let loginsCache = [];
-  async function renderLogins() {
-    loginsCache = await jamVault.logins().catch(() => []);
+  // 비밀번호 점검 결과 (약함 · 재사용 · 유출) — 계산은 메인 프로세스, 여기엔 결과만
+  let healthCache = {};
+  const needsFix = (h) => h && (h.weak || h.reusedWith.length || h.breached > 0);
+  function healthTags(l) {
+    const h = healthCache[l.id];
+    if (!h) return [];
+    const tags = [];
+    if (h.breached > 0) tags.push(el('span', { class: 'pw-tag bad', title: `알려진 유출 목록에 ${h.breached.toLocaleString()}번 나온 비밀번호예요. 바꾸세요` }, '⚠ 유출됨'));
+    if (h.reusedWith.length) {
+      const others = h.reusedWith.map((id) => loginsCache.find((x) => x.id === id)).filter(Boolean).map((x) => x.title || x.origin);
+      tags.push(el('span', { class: 'pw-tag bad', title: `같은 비밀번호: ${others.join(', ')}` }, `재사용 ${h.reusedWith.length + 1}곳`));
+    }
+    if (h.weak) tags.push(el('span', { class: 'pw-tag warn', title: h.reasons.join(' · ') || '추측하기 쉬워요' }, `약함${h.reasons[0] ? ' · ' + h.reasons[0] : ''}`));
+    if (h.breached === 0) tags.push(el('span', { class: 'pw-tag', title: '마지막 유출 확인에서 나오지 않았어요' }, '유출 없음'));
+    return tags;
+  }
+  function renderHealthBar() {
+    const vals = loginsCache.map((l) => healthCache[l.id]).filter(Boolean);
+    $('#pw-health').hidden = !loginsCache.length;
+    const weak = vals.filter((h) => h.weak).length;
+    const reused = vals.filter((h) => h.reusedWith.length).length;
+    const br = vals.filter((h) => h.breached > 0).length;
+    const parts = [];
+    if (br) parts.push(`⚠ 유출 ${br}`);
+    if (reused) parts.push(`재사용 ${reused}`);
+    if (weak) parts.push(`약함 ${weak}`);
+    $('#pw-health-text').textContent = parts.length ? `비밀번호 점검: ${parts.join(' · ')} — 바꾸기를 권해요` : `비밀번호 점검: ${vals.length}개 모두 괜찮아요`;
+    $('#pw-health-text').className = parts.length ? 'pw-bad' : '';
+  }
+  $('#pw-health-only').addEventListener('change', () => renderLogins(true));
+  $('#pw-breach').addEventListener('click', async () => {
+    const btn = $('#pw-breach');
+    btn.disabled = true;
+    btn.textContent = '확인 중…';
+    try {
+      const r = await jamVault.breachCheck();
+      toast(r.found ? `⚠ ${r.checked}개 중 ${r.found}개가 알려진 유출 목록에 있어요. 바꾸세요` : `${r.checked}개 모두 알려진 유출 목록에 없어요`);
+      await renderLogins();
+    } catch (e) {
+      toast('유출 확인 실패: ' + errText(e));
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '유출 확인';
+    }
+  });
+
+  async function renderLogins(cached) {
+    if (!cached) {
+      loginsCache = await jamVault.logins().catch(() => []);
+      healthCache = await jamVault.health().catch(() => ({}));
+    }
+    renderHealthBar();
     const q = $('#login-q').value.trim().toLowerCase();
-    const list = loginsCache.filter((l) => !q || `${l.origin} ${l.title} ${l.username}`.toLowerCase().includes(q));
+    const only = $('#pw-health-only').checked;
+    const list = loginsCache.filter((l) => (!q || `${l.origin} ${l.title} ${l.username}`.toLowerCase().includes(q)) && (!only || needsFix(healthCache[l.id])));
     $('#login-empty').hidden = loginsCache.length > 0;
     $('#login-list').replaceChildren(
       ...list.map((l) => {
@@ -320,7 +378,7 @@ const account = (() => {
           'li',
           { class: 'login-row' },
           el('img', { src: faviconFor(l.origin), alt: '' }),
-          el('div', { class: 'l-main' }, el('span', { class: 'l-site', title: l.origin }, l.title || l.origin), el('span', { class: 'l-user' }, `${l.username || '(아이디 없음)'} · ${l.origin}`), pwSpan),
+          el('div', { class: 'l-main' }, el('span', { class: 'l-site', title: l.origin }, l.title || l.origin), el('span', { class: 'l-user' }, `${l.username || '(아이디 없음)'} · ${l.origin}`), el('div', { class: 'l-health' }, ...healthTags(l)), pwSpan),
           el('button', {
             class: 'mini-btn',
             title: '비밀번호 복사 (20초 뒤 클립보드에서 지워져요)',
@@ -535,6 +593,7 @@ const account = (() => {
     lockNow,
     refresh,
     isUnlocked: () => state.unlocked,
+    selfFp: () => (state.unlocked ? selfFp : null),
     friendFps: () => (state.unlocked ? friendsCache.map((f) => f.fp) : []),
     friendName: (fp) => friendsCache.find((f) => f.fp === fp)?.name || null,
     fpPretty,

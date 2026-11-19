@@ -27,6 +27,20 @@
       <button id="reload" class="icon-btn" title="새로고침 (F5)">↻</button>
       <button id="home-btn" class="icon-btn" title="홈" hidden>⌂</button>
       <form id="url-form">
+        <div class="pop-wrap" id="shield-wrap" hidden>
+          <button id="shield-btn" type="button" class="shield-btn" title="사이트 보호 · 권한">🛡<span id="shield-count" class="shield-count" hidden></span></button>
+          <div id="shield-pop" class="popover shield-pop">
+            <div class="pop-title" id="shield-site"></div>
+            <div id="shield-summary" class="muted small pop-note"></div>
+            <ul id="shield-hosts" class="shield-hosts"></ul>
+            <label class="shield-row"><span>추적기 · 광고 차단</span><span class="toggle"><input id="shield-on" type="checkbox" /><span></span></span></label>
+            <label class="shield-row"><span>서드파티 쿠키 차단</span><span class="toggle"><input id="shield-cookies" type="checkbox" /><span></span></span></label>
+            <label class="shield-row" title="이 사이트가 내 PC(127.0.0.1 · localhost) · 공유기 · 같은 네트워크 주소에 요청하는 것"><span>내 PC · 같은 네트워크 접속 막기</span><span class="toggle"><input id="shield-local" type="checkbox" /><span></span></span></label>
+            <div id="shield-local-note" class="pref-warn small" hidden></div>
+            <div id="shield-perms"></div>
+            <div class="btn-row"><button id="shield-reload" type="button" class="mini-btn" hidden>새로고침해서 적용</button><button id="shield-all" type="button" class="text-btn small">모든 사이트 설정</button></div>
+          </div>
+        </div>
         <span id="jam-tab-flag" hidden>JAM</span>
         <span id="lock-flag" hidden title="다른 사이트로 이동하려면 호스트의 권한이 필요해요">🔒 같은 사이트만</span>
         <input id="url" type="text" spellcheck="false" autocomplete="off" placeholder="검색어 또는 주소 입력" />
@@ -86,6 +100,12 @@
         <div id="login-banner" class="top-banner" hidden>
           <span>🔐 로그인 중이에요 · 이 로그인 창은 나만 보여요. 로그인을 마치면 <b id="login-target"></b>(으)로 이동하고 영상·화면을 따라가요</span>
           <button id="login-skip" class="text-btn small">지금 Jam으로 이동</button>
+        </div>
+        <div id="perm-banner" class="top-banner perm-banner" hidden>
+          <span id="perm-text"></span>
+          <button id="perm-allow" class="primary-btn small-btn">허용</button>
+          <button id="perm-once" class="text-btn small">이번만</button>
+          <button id="perm-deny" class="text-btn small">차단</button>
         </div>
         <div id="clip-site-banner" class="top-banner warn" hidden>
           <span>⚠️ 이 사이트에는 클립보드에 복사하는 기능이 있어요. 복사된 내용이 명령어라면 <b>절대 실행하지 마세요.</b></span>
@@ -158,6 +178,12 @@
             <input id="invite" type="text" spellcheck="false" placeholder="jam://192.168.0.5:3030/K7Q2M/비밀키…" />
           </label>
           <button id="join-jam" class="secondary-btn">참여하기</button>
+
+          <div class="section resume" id="resume-box" hidden>
+            <div class="section-title">💻 내 다른 기기의 Jam <span class="muted small">같은 브라우저 계정</span> <button id="resume-find" class="text-btn small" type="button">다시 찾기</button></div>
+            <ul id="resume-list"></ul>
+            <div id="resume-empty" class="muted small"></div>
+          </div>
 
           <div class="section nearby">
             <div class="section-title">근처 Jam <span class="muted small">같은 네트워크 · 서버 없이</span></div>
@@ -512,6 +538,11 @@
             </label>
             <div class="btn-row"><button type="submit" class="primary-btn small-btn">저장</button><button id="lf-cancel" type="button" class="text-btn">취소</button></div>
           </form>
+          <div id="pw-health" class="pw-health" hidden>
+            <span id="pw-health-text"></span>
+            <label class="pw-health-only"><input id="pw-health-only" type="checkbox" /> 고칠 것만</label>
+            <button id="pw-breach" type="button" class="mini-btn" title="Have I Been Pwned 에 비밀번호 해시(SHA-1)의 앞 5자리만 보내고, 이 PC 에서 직접 맞춰 봐요. 비밀번호 · 아이디 · 사이트는 보내지 않아요">유출 확인</button>
+          </div>
           <ul id="login-list" class="set-list"></ul>
           <div id="login-empty" class="muted small">저장한 비밀번호가 없어요. 사이트에서 로그인하면 저장할지 물어봐요.</div>
           <p class="muted small">🔑 로그인 칸 옆의 열쇠를 눌러야 채워져요(내가 직접 누를 때만). 주소가 정확히 같은 사이트에만 채워서 가짜 사이트에는 넘어가지 않아요. 복사한 비밀번호는 20초 뒤 클립보드에서 지워져요.</p>
@@ -604,5 +635,7 @@
   <script src="mirror.js"></script>
   <script src="files.js"></script>
   <script src="account.js"></script>
+  <script src="siteguard.js"></script>
+  <script src="resume.js"></script>
 </body>
 </html>

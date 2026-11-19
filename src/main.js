@@ -1,5 +1,5 @@
 'use strict';
-const { app, BrowserWindow, ipcMain, Menu, clipboard, session, webContents, safeStorage, powerMonitor, protocol } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, clipboard, session, webContents, safeStorage, powerMonitor, protocol, net } = require('electron');
 const { ElectronChromeExtensions } = require('electron-chrome-extensions');
 const { installChromeWebStore, uninstallExtension } = require('electron-chrome-web-store');
 const path = require('path');
@@ -16,6 +16,8 @@ const httpsTried = new Map(); // webContentsId → { https, http, host }
 const httpOnlyHosts = new Set();
 const { setupVault } = require('./vault');
 const { setupJamFiles, SCHEME: JAMFILE } = require('./jamfiles');
+const { setupSiteGuard } = require('./siteguard');
+let siteGuard = null;
 
 // 같이 보는 파일: jamfile://<파일ID>/ (앱 준비 전에 등록해야 함)
 protocol.registerSchemesAsPrivileged([{ scheme: JAMFILE, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
@@ -45,6 +47,44 @@ const CHROME_UA = app.userAgentFallback
   .replace(/\s+(Electron|jam-browser|Jam ?Browser)\/\S+/gi, '')
   .replace(/Chrome\/(\d+)\.[\d.]+/, 'Chrome/$1.0.0.0');
 app.userAgentFallback = CHROME_UA;
+
+// Google 로그인 "안전하지 않은 브라우저" 대책: UA 문자열만 Chrome 처럼 바꾸면, 요청 헤더(Sec-CH-UA)와
+// navigator.userAgentData 의 브랜드 목록에는 여전히 "Chromium" 만 있어서 내장 브라우저로 보인다.
+// → 웹페이지 탭마다 브랜드 목록에 실제 Chrome 처럼 "Google Chrome" 을 넣는다 (헤더 · 자바스크립트 모두, 버전은 실제 엔진 버전)
+let uaHints = null; // 앱 화면에서 읽은 실제 값 (OS 버전 · CPU 등)
+function chromeUaMetadata() {
+  const full = process.versions.chrome;
+  const major = full.split('.')[0];
+  const h = uaHints || {};
+  const keep = (list) => (Array.isArray(list) ? list : []).filter((b) => b && b.brand && !/Google Chrome|Electron/i.test(b.brand));
+  const brands = keep(h.brands);
+  const fullList = keep(h.fullVersionList);
+  if (!brands.length) brands.push({ brand: 'Not=A?Brand', version: '24' }, { brand: 'Chromium', version: major });
+  if (!fullList.length) fullList.push(...brands.map((b) => ({ brand: b.brand, version: b.brand === 'Chromium' ? full : `${b.version}.0.0.0` })));
+  const platform = { win32: 'Windows', darwin: 'macOS', linux: 'Linux' }[process.platform] || 'Windows';
+  return {
+    brands: [...brands, { brand: 'Google Chrome', version: major }],
+    fullVersionList: [...fullList, { brand: 'Google Chrome', version: full }],
+    fullVersion: full,
+    platform,
+    platformVersion: h.platformVersion || (platform === 'Windows' ? '15.0.0' : ''),
+    architecture: h.architecture || 'x86',
+    model: '',
+    mobile: false,
+    bitness: h.bitness || '64',
+    wow64: false,
+  };
+}
+function applyChromeIdentity(contents) {
+  try {
+    if (!contents.debugger.isAttached()) contents.debugger.attach('1.3');
+    contents.debugger
+      .sendCommand('Emulation.setUserAgentOverride', { userAgent: CHROME_UA, userAgentMetadata: chromeUaMetadata() })
+      .catch((e) => console.error('UA 설정 실패:', e.message));
+  } catch (e) {
+    console.error('UA 설정 실패:', e.message); // 개발자 도구가 이미 붙어 있는 경우 등 — 그래도 UA 문자열은 Chrome
+  }
+}
 
 // Jam 탭의 webContents id → 다른 사이트 이동이 잠겨 있는지
 const lockedJamTabs = new Set();
@@ -110,6 +150,15 @@ function createWindow() {
     });
   }
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  // 웹페이지 탭에 넣을 브랜드 정보의 실제 값(OS 버전 · CPU)을 이 엔진에서 읽어 둠
+  mainWindow.webContents.once('did-finish-load', () => {
+    mainWindow.webContents
+      .executeJavaScript(`navigator.userAgentData ? navigator.userAgentData.getHighEntropyValues(['platformVersion', 'architecture', 'bitness', 'fullVersionList']).then((v) => ({ ...v, brands: navigator.userAgentData.brands })) : null`)
+      .then((v) => {
+        if (v) uaHints = v;
+      })
+      .catch(() => {});
+  });
   mainWindow.on('closed', () => (mainWindow = null));
   mainWindow.on('enter-full-screen', () => mainWindow.webContents.send('fullscreen', true));
   mainWindow.on('leave-full-screen', () => mainWindow.webContents.send('fullscreen', false));
@@ -157,6 +206,7 @@ app.on('web-contents-created', (_e, contents) => {
   });
 
   if (contents.getType() === 'webview') {
+    applyChromeIdentity(contents);
     // HTTPS 우선: https 로 바꿔 연 주소가 실패하면 그 사이트는 http 로 (이 앱을 켜 둔 동안 기억)
     const httpsFallback = (_e, code, _desc, url, isMainFrame) => {
       if (isMainFrame === false || code === -3) return; // -3 = 사용자가 멈춤 · 다른 이동
@@ -249,6 +299,7 @@ ipcMain.handle('jam:host-start', async (_e, opts = {}) => {
 
 ipcMain.handle('jam:host-stop', async () => {
   if (relayTunnel) {
+    relayTunnel.setPresence(null); // 다른 기기에서 이어 보기 목록에서 지움
     relayTunnel.close();
     relayTunnel = null;
   }
@@ -261,6 +312,72 @@ ipcMain.handle('jam:host-stop', async () => {
     jamServer = null;
     await s.close();
   }
+});
+
+// ---------- 다른 기기에서 이어 보기 (같은 브라우저 계정) ----------
+// 호스트: 중계 서버에 무작위 ID + 암호문(초대 링크)을 맡김. 계정 키는 메인 프로세스 밖으로 나가지 않음
+const PRESENCE = require('../shared/presence');
+ipcMain.handle('resume:publish', (e, { link, title } = {}) => {
+  if (!fromApp(e) || !relayTunnel) return { ok: false, reason: relayTunnel ? 'forbidden' : 'no-relay' };
+  if (!link) {
+    relayTunnel.setPresence(null);
+    return { ok: true };
+  }
+  const p = vaultApi && vaultApi.presence();
+  if (!p || !prefs.resumePublish) return { ok: false, reason: p ? 'off' : 'locked' };
+  if (typeof link !== 'string' || !/^jamrs?:\/\/[^\s]{8,400}$/.test(link)) return { ok: false, reason: 'bad-link' };
+  const blob = PRESENCE.seal(p.key, { v: 1, link, title: String(title || '').slice(0, 120), device: os.hostname().slice(0, 40), at: Date.now() });
+  p.key.fill(0);
+  relayTunnel.setPresence({ id: p.id, blob });
+  return { ok: true };
+});
+// 다른 기기: 중계 서버마다 내 ID 로 찾아보고, 이 PC 에서 풀어 봄
+function getJson(url, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      return resolve({ status: 0 });
+    }
+    const mod = u.protocol === 'https:' ? require('https') : require('http');
+    const req = mod.get(u, { timeout: timeoutMs, headers: { Accept: 'application/json' } }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (d) => {
+        body += d;
+        if (body.length > 8192) req.destroy();
+      });
+      res.on('end', () => {
+        let json = null;
+        try {
+          json = JSON.parse(body);
+        } catch {}
+        resolve({ status: res.statusCode, json });
+      });
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve({ status: 0 }));
+  });
+}
+ipcMain.handle('resume:find', async (e, { relayUrls } = {}) => {
+  if (!fromApp(e)) return { found: [] };
+  const p = vaultApi && vaultApi.presence();
+  if (!p) return { found: [], reason: 'locked' };
+  const urls = (Array.isArray(relayUrls) ? relayUrls : []).filter((u) => typeof u === 'string').slice(0, 8);
+  const found = [];
+  const unsupported = [];
+  await Promise.all(urls.map(async (relay) => {
+    const url = PRESENCE.lookupUrl(relay, p.id);
+    if (!url) return;
+    const r = await getJson(url);
+    if (r.status === 200 && r.json && typeof r.json.blob === 'string') {
+      const o = PRESENCE.open(p.key, r.json.blob);
+      if (o && typeof o.link === 'string' && /^jamrs?:\/\//.test(o.link)) found.push({ relay, link: o.link, title: o.title || '', device: o.device || '', at: Number(o.at) || 0 });
+    } else if (r.status === 200 && !r.json) unsupported.push(relay); // 예전 중계 서버 (1.0.4 이하)
+  }));
+  p.key.fill(0);
+  return { found, unsupported };
 });
 
 // ---------- 중계 서버 상태 확인 ----------
@@ -452,7 +569,13 @@ ipcMain.handle('nearby:list', (e) => (fromApp(e) ? nearbyList : []));
 // ---------- 세부 설정: 앱 화면이 시작할 때 · 바꿀 때마다 보냄 → 바로 적용 ----------
 function applyPrefs(prev) {
   if (jamServer) jamServer.setLimits(PREFS.serverLimits(prefs));
+  if (updater) {
+    updater.autoDownload = prefs.updateAuto;
+    if (verifiedVersion) updater.autoInstallOnAppQuit = prefs.updateInstall !== 'manual';
+    if (!prev || prev.updateCheckHours !== prefs.updateCheckHours || prev.updateAuto !== prefs.updateAuto) scheduleUpdateChecks();
+  }
   if (jamFilesApi) jamFilesApi.setLimits(prefs);
+  if (siteGuard) siteGuard.applyPrefs();
   // 근처 알림: 끄거나 간격이 바뀌면 다시 시작
   if (beacon && (!prefs.nearbyAnnounce || (prev && prev.nearbyIntervalSec !== prefs.nearbyIntervalSec))) {
     beacon.close();
@@ -720,7 +843,22 @@ function pushUpdate(state) {
   updateState = state;
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update', state);
 }
+// 자동 업데이트 (설정 → 업데이트)
+//  - 새 버전을 받으면 릴리스의 서명 파일(.sig)을 받아 앱 안의 공개키(update-key.pub.pem)로 확인한 뒤에만 설치해요
+//    (확인 전에는 "끌 때 설치" 도 꺼 둠 → 서명이 안 맞으면 받은 파일을 지우고 설치하지 않음)
+//  - 설치 시점: 앱을 끌 때(기본) · 쓰지 않을 때 자동으로 다시 켜서(Jam 중이 아닐 때) · 내가 누를 때만
+let updater = null;
+let updateTimer = null;
+let verifiedVersion = null;
+let appBusy = false; // 앱 화면이 알려 줌: Jam 중이면 자동 재시작 안 함
+const { verifyFile } = require('../shared/update-sign');
+function scheduleUpdateChecks() {
+  clearInterval(updateTimer);
+  if (updater && prefs.updateAuto) updateTimer = setInterval(() => updater.checkForUpdates().catch(() => {}), prefs.updateCheckHours * 3600e3);
+}
 function setupAutoUpdate() {
+  // 테스트 전용: 화면 밖 테스트 모드에서만 다른 업데이트 주소를 쓸 수 있음
+  const testFeed = process.env.JAM_TEST_OFFSCREEN === '1' ? process.env.JAM_UPDATE_FEED : '';
   if (!app.isPackaged) return;
   let autoUpdater;
   try {
@@ -728,20 +866,61 @@ function setupAutoUpdate() {
   } catch {
     return;
   }
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
+  updater = autoUpdater;
+  if (testFeed) autoUpdater.setFeedURL({ provider: 'generic', url: testFeed });
+  autoUpdater.autoDownload = prefs.updateAuto;
+  autoUpdater.autoInstallOnAppQuit = false; // 서명을 확인한 뒤에 켬
   autoUpdater.on('checking-for-update', () => pushUpdate({ state: 'checking' }));
   autoUpdater.on('update-not-available', () => pushUpdate({ state: 'latest', version: app.getVersion() }));
-  autoUpdater.on('update-available', (info) => pushUpdate({ state: 'downloading', version: info.version, percent: 0 }));
+  autoUpdater.on('update-available', (info) => pushUpdate({ state: autoUpdater.autoDownload ? 'downloading' : 'available', version: info.version, percent: 0 }));
   autoUpdater.on('download-progress', (p) => pushUpdate({ state: 'downloading', version: updateState.version, percent: Math.round(p.percent) }));
-  autoUpdater.on('update-downloaded', (info) => pushUpdate({ state: 'ready', version: info.version }));
+  autoUpdater.on('update-downloaded', async (info) => {
+    verifiedVersion = null;
+    autoUpdater.autoInstallOnAppQuit = false;
+    pushUpdate({ state: 'verifying', version: info.version });
+    const file = info.downloadedFile;
+    const name = path.basename(String((info.files && info.files[0] && info.files[0].url) || file));
+    const sigUrl = testFeed ? `${testFeed.replace(/\/+$/, '')}/${name}.sig` : `https://github.com/jam-browser/browser/releases/download/v${info.version}/${name}.sig`;
+    try {
+      const res = await net.fetch(sigUrl);
+      if (!res.ok) throw new Error(`서명 파일을 받지 못했어요 (${res.status})`);
+      const pub = fs.readFileSync(path.join(__dirname, 'update-key.pub.pem'), 'utf8');
+      const v = await verifyFile(pub, info.version, file, await res.text());
+      if (!v.ok) throw new Error(v.reason);
+      verifiedVersion = info.version;
+      autoUpdater.autoInstallOnAppQuit = prefs.updateInstall !== 'manual';
+      console.log(`[update] ${info.version} 서명 확인됨`);
+      pushUpdate({ state: 'ready', version: info.version, verified: true, install: prefs.updateInstall });
+    } catch (e) {
+      console.log(`[update] ${info.version} 서명 확인 실패: ${e.message}`);
+      try {
+        fs.unlinkSync(file);
+      } catch {}
+      pushUpdate({ state: 'error', version: info.version, verifyFailed: true, message: `업데이트 서명 확인 실패: ${e.message} — 설치하지 않았어요` });
+    }
+  });
   autoUpdater.on('error', (e) => pushUpdate({ state: 'error', message: String(e?.message || e).slice(0, 200) }));
-  const check = () => autoUpdater.checkForUpdates().catch(() => {});
-  setTimeout(check, 5000);
-  setInterval(check, 4 * 60 * 60 * 1000); // 4시간마다
-  ipcMain.on('update:check', check);
-  ipcMain.on('update:install', () => autoUpdater.quitAndInstall(false, true));
+  const check = (manual) => {
+    if (manual === true) autoUpdater.autoDownload = true; // 직접 누른 확인은 받기까지
+    autoUpdater.checkForUpdates().catch(() => {});
+  };
+  if (prefs.updateAuto) setTimeout(check, 5000);
+  scheduleUpdateChecks();
+  ipcMain.on('update:check', (e) => fromApp(e) && check(true));
+  ipcMain.on('update:install', (e) => {
+    if (fromApp(e) && verifiedVersion) autoUpdater.quitAndInstall(false, true);
+  });
+  // 쓰지 않을 때 자동으로 다시 켜서 설치 (설정: 쓰지 않을 때) — Jam 중이면 기다림
+  setInterval(() => {
+    if (!verifiedVersion || prefs.updateInstall !== 'idle' || appBusy) return;
+    if (powerMonitor.getSystemIdleTime() < prefs.updateIdleMin * 60) return;
+    console.log(`[update] ${prefs.updateIdleMin}분 동안 쓰지 않아서 ${verifiedVersion} 로 다시 켜요`);
+    autoUpdater.quitAndInstall(true, true);
+  }, 60e3).unref();
 }
+ipcMain.on('app:busy', (e, b) => {
+  if (fromApp(e)) appBusy = !!b;
+});
 ipcMain.handle('app:info', () => ({ version: app.getVersion(), packaged: app.isPackaged, update: updateState }));
 
 // ======================================================================
@@ -776,11 +955,20 @@ ipcMain.on('ext:tab-created', (_e, { reqId, wcId }) => {
   pendingExtTabs.delete(reqId);
   if (done) done(wcId);
 });
-ipcMain.on('ext:tab-activated', (_e, wcId) => {
+// 앱이 "지금 탭" 을 알려 줄 때는, 확장 프로그램 시스템이 그걸 다시 "이 탭을 골라" 로 되돌려 보내지 않게 막는다.
+// (되돌아온 알림이 늦게 도착하면 그 사이 바꾼 탭에서 이전 탭으로 끌려가고, 그게 또 되돌아와서 탭이 끝없이 왔다갔다 했음)
+let appActivatingTab = false;
+ipcMain.on('ext:tab-activated', (e, wcId) => {
   // 아직 webview 가 안 붙은 탭이면 id 가 null → fromId 가 예외를 던져 오류 창이 뜨던 문제
-  if (!Number.isInteger(wcId)) return;
+  if (!fromApp(e) || !Number.isInteger(wcId)) return;
   const wc = webContents.fromId(wcId);
-  if (wc && extensions) extensions.selectTab(wc);
+  if (!wc || !extensions) return;
+  appActivatingTab = true;
+  try {
+    extensions.selectTab(wc);
+  } finally {
+    appActivatingTab = false;
+  }
 });
 
 // 웹 스토어에서 "Chrome에 추가"를 누르면 한 번 더 묻는다
@@ -810,7 +998,8 @@ function setupExtensions(ses) {
   extensions = new ElectronChromeExtensions({
     session: ses,
     createTab: createTabForExtension,
-    selectTab: (wc) => mainWindow?.webContents.send('ext:select-tab', wc.id),
+    // 확장 프로그램이 직접 탭을 고를 때만 앱에 알림 (앱이 알려 준 것의 메아리는 보내지 않음)
+    selectTab: (wc) => !appActivatingTab && mainWindow?.webContents.send('ext:select-tab', wc.id),
     removeTab: (wc) => mainWindow?.webContents.send('ext:close-tab', wc.id),
   });
   // 앱 UI 창(기본 세션)에 확장 아이콘 줄을 보여 준다
@@ -859,13 +1048,19 @@ app.whenReady().then(() => {
     if (ok && consume) pendingCapture = null;
     return ok;
   };
+  // 사이트 보호: 추적기 · 광고 차단, 서드파티 쿠키, 사이트 권한(위치 · 알림 · 카메라 · 마이크 …)
+  siteGuard = setupSiteGuard({ app, ipcMain, net, webContents, getWindow: () => mainWindow, getPrefs: () => prefs, testMode: process.env.JAM_TEST_OFFSCREEN === '1' });
+  siteGuard.attach(ses);
+  siteGuard.applyPrefs();
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
     notifyClipboard(wc, permission);
-    callback(ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, details, true));
+    if (ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, details, true)) return callback(true);
+    siteGuard.requestPermission(wc, permission, details || {}, callback); // 사이트마다 묻고 기억 (그 밖의 권한은 거절)
   });
   ses.setPermissionCheckHandler((wc, permission, origin, details) => {
     notifyClipboard(wc, permission);
-    return ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, { securityOrigin: origin, ...details });
+    return ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, { securityOrigin: origin, ...details }) ||
+      siteGuard.checkPermission(wc, permission, origin, details || {});
   });
   setupDownloads(ses);
   setupExtensions(ses);
@@ -874,10 +1069,17 @@ app.whenReady().then(() => {
   jamFilesApi = setupJamFiles({ ipcMain, dialog, getWindow: () => mainWindow, getSession: () => ses, appDir: path.join(__dirname, '..') });
   jamFilesApi.attach(ses);
   jamFilesApi.setLimits(prefs);
-  // 요청 검사는 하나로: jamfile:// 를 웹페이지가 불러오는 것 막기 + HTTPS 우선
-  ses.webRequest.onBeforeRequest({ urls: ['jamfile://*/*', 'http://*/*'] }, (d, cb) => {
+  // 요청 검사는 하나로 (세션마다 리스너가 하나뿐): jamfile:// 를 웹페이지가 불러오는 것 막기 + HTTPS 우선 + 추적기 · 광고 차단
+  ses.webRequest.onBeforeRequest({ urls: ['jamfile://*/*', 'http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (d, cb) => {
     if (d.url.startsWith('jamfile:')) return cb({ cancel: jamFilesApi.blockedRequest(d) });
-    if (prefs.httpsFirst && d.resourceType === 'mainFrame' && d.method === 'GET') {
+    let blocked = null;
+    try {
+      blocked = siteGuard.onRequest(d);
+    } catch (e) {
+      console.error('차단 검사 오류:', e.message);
+    }
+    if (blocked) return cb(blocked);
+    if (prefs.httpsFirst && d.resourceType === 'mainFrame' && d.method === 'GET' && d.url.startsWith('http:')) {
       const up = httpsUpgrade(d.url);
       let host = '';
       try {
@@ -891,7 +1093,7 @@ app.whenReady().then(() => {
     }
     cb({});
   });
-  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched, getPrefs: () => prefs });
+  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched, getPrefs: () => prefs, fetch: (u, o) => net.fetch(u, o) });
   createWindow();
   startNearbyScanner();
   setupAutoUpdate();
