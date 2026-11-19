@@ -40,9 +40,11 @@ let pairing = null; // 진행 중인 근처 페어링
 let pendingCapture = null; // 화면 미러링: 앱이 방금 요청한 탭 캡처 { wcId, until }
 const beaconId = crypto.randomBytes(12).toString('base64url');
 
-// 웹사이트에는 일반 Chromium 브라우저로 보이게 한다.
-// 기본 UA 에 붙는 "Electron/x" · "jam-browser/x" 때문에 Google 로그인 등 일부 사이트가 막는다.
-// 버전도 실제 Chrome 처럼 주 버전만 남긴다 (Chrome/156.0.0.0).
+// 웹사이트에는 일반 Chromium 브라우저로 보이게 한다 (UA 에 붙는 "Electron/x" · "jam-browser/x" 를 빼서,
+// 그 이름을 보고 막거나 다르게 보여 주는 사이트 대비). 버전도 실제 Chrome 처럼 주 버전만 남긴다 (Chrome/156.0.0.0).
+// 단, Google 로그인 화면은 반대로 이 모양을 막아서 원래 UA 를 씀 (아래 isGoogleSignin).
+// 원래 UA (… jam-browser/x Chrome/… Electron/x …) — Google 로그인 화면에서만 씀
+const ELECTRON_UA = app.userAgentFallback;
 const CHROME_UA = app.userAgentFallback
   .replace(/\s+(Electron|jam-browser|Jam ?Browser)\/\S+/gi, '')
   .replace(/Chrome\/(\d+)\.[\d.]+/, 'Chrome/$1.0.0.0');
@@ -75,15 +77,11 @@ function chromeUaMetadata() {
     wow64: false,
   };
 }
-// Google 로그인 화면(accounts.google.*)에서만 Firefox 로 보이기
-//  Google 은 Chrome 이라고 하는 브라우저에는 진짜 Chrome 인지 페이지 안에서 여러 가지를 더 확인해서, Electron 기반 브라우저는
-//  브랜드 정보를 맞춰도 "안전하지 않은 브라우저" 로 막힐 수 있음. Firefox 에는 그 확인을 하지 않음
-//  (Ferdium · Min 같은 Electron 브라우저가 쓰는 방법). 로그인을 마치고 다른 주소로 가면 다시 Chrome 으로
-const FIREFOX_UA = (() => {
-  // Firefox 는 4주마다 새 버전 (128 = 2024-07-09). 너무 앞서지 않게 하나 낮춤
-  const v = 128 + Math.max(0, Math.floor((Date.now() - Date.UTC(2024, 6, 9)) / (28 * 864e5)) - 1);
-  return `Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:${v}.0) Gecko/20100101 Firefox/${v}.0`;
-})();
+// Google 로그인 화면(accounts.google.*)에서는 이 브라우저의 원래 모습(Electron 그대로의 UA)을 보여 준다
+//  Google 은 "Chrome 과 똑같이 생긴" UA 를 쓰는 Electron 브라우저(가짜 Chrome)를 막고("안전하지 않은 브라우저"),
+//  Firefox 로 꾸며도 페이지 안의 Chromium 흔적과 어긋나서 들쭉날쭉 막는다.
+//  UA 에 제품 이름(jam-browser/… · Electron/…)이 그대로 있는 원래 모습은 통과 (다른 Electron 브라우저들의 실측과 이 앱 실측).
+//  로그인을 마치고 다른 주소로 가면 다시 Chrome 모양으로
 const isGoogleSignin = (u) => {
   try {
     const h = new URL(u).hostname;
@@ -92,54 +90,43 @@ const isGoogleSignin = (u) => {
     return false;
   }
 };
-// 페이지 안(모든 프레임, 페이지 스크립트보다 먼저): 로그인 화면에서만 Chrome 전용 값을 Firefox 처럼
-const SIGNIN_SHIM = `(() => { try {
-  if (!/^accounts\\.(google\\.[a-z.]+|youtube\\.com)$/.test(location.hostname)) return;
-  const def = (o, k, v) => { try { Object.defineProperty(o, k, { get: () => v, configurable: true }); } catch {} };
-  const N = Navigator.prototype;
-  def(N, 'userAgent', ${JSON.stringify(FIREFOX_UA)});
-  def(N, 'appVersion', '5.0 (Windows)');
-  def(N, 'platform', 'Win32');
-  def(N, 'oscpu', 'Windows NT 10.0; Win64; x64');
-  def(N, 'userAgentData', undefined);
-  def(N, 'vendor', '');
-  def(N, 'productSub', '20100101');
-} catch {} })();`;
-const identityOf = new Map(); // webContents id → 'chrome' | 'firefox'
+const identityOf = new Map(); // webContents id → 'chrome' | 'native'
 function setIdentity(contents, mode) {
   identityOf.set(contents.id, mode);
   try {
     if (!contents.debugger.isAttached()) contents.debugger.attach('1.3');
   } catch (e) {
-    console.error('UA 설정 실패:', e.message); // 개발자 도구가 이미 붙어 있는 경우 등 — 그래도 UA 문자열은 Chrome
+    console.error('UA 설정 실패:', e.message); // 개발자 도구가 이미 붙어 있는 경우 등
     return Promise.resolve();
   }
-  const params = mode === 'firefox' ? { userAgent: FIREFOX_UA, platform: 'Win32' } : { userAgent: CHROME_UA, userAgentMetadata: chromeUaMetadata() };
+  // native: UA 만 원래대로 (브랜드 정보는 엔진 기본값 그대로 — 꾸미지 않음)
+  const params = mode === 'native' ? { userAgent: ELECTRON_UA } : { userAgent: CHROME_UA, userAgentMetadata: chromeUaMetadata() };
   return contents.debugger.sendCommand('Emulation.setUserAgentOverride', params).catch((e) => console.error('UA 설정 실패:', e.message));
 }
 function applyChromeIdentity(contents) {
   setIdentity(contents, 'chrome');
-  if (contents.debugger.isAttached()) {
-    contents.debugger.sendCommand('Page.enable').catch(() => {});
-    contents.debugger.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: SIGNIN_SHIM }).catch(() => {});
-  }
   contents.once('destroyed', () => identityOf.delete(contents.id));
 }
-// 요청 헤더: 로그인 화면(또는 로그인 화면을 연 탭의 요청)이면 Firefox UA, Chrome 전용 헤더(Sec-CH-UA*) 빼기
+// 엔진 기본 브랜드 (Google Chrome 을 넣지 않은 것) → Sec-CH-UA 헤더 값
+function nativeBrandsHeader() {
+  const major = process.versions.chrome.split('.')[0];
+  const list = ((uaHints && uaHints.brands) || [{ brand: 'Not=A?Brand', version: '24' }, { brand: 'Chromium', version: major }]).filter((b) => !/Google Chrome/i.test(b.brand));
+  return list.map((b) => `"${b.brand}";v="${b.version}"`).join(', ');
+}
+// 요청 헤더: 로그인 화면을 연 탭의 요청은 원래 UA + 꾸미지 않은 브랜드. 막 나온 첫 요청은 Chrome 모양으로 되돌림
+//  (탭 UA 바꾸기는 페이지 이동과 같이 진행되므로, 바뀌기 전에 나가는 요청을 여기서 맞춤)
 function signinHeaders(d, h) {
   if (!Number.isInteger(d.webContentsId)) return false;
   const mode = identityOf.get(d.webContentsId);
-  if (mode === 'firefox') {
-    for (const k of Object.keys(h)) {
-      const l = k.toLowerCase();
-      if (l === 'user-agent') h[k] = FIREFOX_UA;
-      else if (l.startsWith('sec-ch-ua')) delete h[k];
-    }
+  const uaKey = Object.keys(h).find((k) => k.toLowerCase() === 'user-agent');
+  const chKey = Object.keys(h).find((k) => k.toLowerCase() === 'sec-ch-ua');
+  if (mode === 'native') {
+    if (uaKey) h[uaKey] = ELECTRON_UA;
+    if (chKey) h[chKey] = nativeBrandsHeader();
+    for (const k of Object.keys(h)) if (k.toLowerCase() === 'sec-ch-ua-full-version-list') delete h[k];
     return true;
   }
-  // 로그인 화면에서 막 나온 첫 요청: UA 바꾸기가 아직 안 끝나 Firefox 로 나가려 하면 Chrome 헤더로 되돌림
-  const uaKey = Object.keys(h).find((k) => k.toLowerCase() === 'user-agent');
-  if (mode === 'chrome' && uaKey && /Firefox\//.test(h[uaKey])) {
+  if (mode === 'chrome' && uaKey && h[uaKey] !== CHROME_UA && /Electron\//.test(h[uaKey])) {
     h[uaKey] = CHROME_UA;
     if (d.url.startsWith('https:')) {
       const m = chromeUaMetadata();
@@ -1141,9 +1128,9 @@ app.whenReady().then(() => {
     if (d.resourceType === 'mainFrame' && Number.isInteger(d.webContentsId)) {
       const wc = webContents.fromId(d.webContentsId);
       if (wc && !wc.isDestroyed() && wc.getType() === 'webview') {
-        const want = isGoogleSignin(d.url) ? 'firefox' : 'chrome';
+        const want = isGoogleSignin(d.url) ? 'native' : 'chrome';
         // 요청을 붙잡고 기다리면 안 됨 (UA 바꾸기가 이 페이지 이동이 끝나기를 기다려서 서로 멈춤) → 같이 진행.
-        // 이 요청의 헤더는 signinHeaders 가, 페이지 안 값은 SIGNIN_SHIM 이 맞춰 줌
+        // 이 요청의 헤더는 signinHeaders 가 맞춰 줌
         if (identityOf.get(wc.id) !== want) setIdentity(wc, want);
       }
     }
