@@ -32,7 +32,8 @@
     { key: 'nearbyAnnounce', page: 'set-jam', group: '근처 찾기 (같은 네트워크, UDP 3032)', label: '내 Jam 을 근처에 알리기', type: 'bool', def: true, main: true, help: 'Jam 이름 · 호스트 이름 · 접속 주소만 알려요. 초대 비밀키는 보내지 않아요' },
     { key: 'nearbyScan', page: 'set-jam', group: '근처 찾기 (같은 네트워크, UDP 3032)', label: '근처 Jam 찾기', type: 'bool', def: true, main: true },
     { key: 'nearbyIntervalSec', page: 'set-jam', group: '근처 찾기 (같은 네트워크, UDP 3032)', label: '알림 간격', type: 'number', def: 2, min: 1, max: 30, unit: '초', main: true },
-    { key: 'pingEnabled', page: 'set-jam', group: '핑', label: '핑 찍기 · 보기', type: 'bool', def: true, help: 'Alt+클릭 = 📍 여기, Alt+Shift+클릭 = ⚠️ 조심, 오버레이의 📍 버튼을 누른 뒤 클릭해도 돼요' },
+    { key: 'pingEnabled', page: 'set-jam', group: '핑', label: '핑 찍기 · 보기', type: 'bool', def: true, help: '핑 키를 누른 채 클릭 → 휠이 열리면 방향으로 끌어서 고르기: 위 ⚠️ 조심 · 아래 ❓ 뭐지? · 오른쪽 👀 이거 봐 · 왼쪽 🏃 갈게요 · 그대로 놓으면 📍 여기' },
+    { key: 'pingKey', page: 'set-jam', group: '핑', label: '핑 키 (누른 채 클릭 · 드래그)', type: 'select', def: 'alt', options: [['alt', 'Alt'], ['g', 'G (글자 칸 밖에서만, 게임 키와 겹칠 수 있어요)']] },
     { key: 'pingSeconds', page: 'set-jam', group: '핑', label: '핑 표시 시간', type: 'number', def: 6, min: 2, max: 30, unit: '초' },
     { key: 'pingToastOther', page: 'set-jam', group: '핑', label: '다른 페이지에서 찍은 핑은 알림으로', type: 'bool', def: true },
 

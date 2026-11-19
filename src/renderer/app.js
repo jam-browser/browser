@@ -225,6 +225,7 @@ function wireWebview(tab) {
     if (e.isMainFrame) onNav(e.url, true);
   });
   wv.addEventListener('ipc-message', (e) => {
+    if (e.channel === 'jam:ping-hello') return pushPingConfig(tab); // 페이지가 새로 열림 → 핑 설정 알려 주기
     if (e.channel.startsWith('jam:clipboard')) onSafetyPageEvent(tab, e.channel, e.args[0]); // 모든 탭
     else if (e.channel.startsWith('mirror:')) mirror.onPageEvent(tab, e.channel, e.args[0]); // 화면 미러링 중인 탭
     else if (tab === jam.tab) onJamPageEvent(tab, e.channel, e.args[0]);
@@ -240,6 +241,22 @@ function wireWebview(tab) {
 }
 
 // Jam 동기화로 Jam 탭을 이동 (내가 누른 이동이 아니라는 표시를 남겨, 다운로드 링크면 막는다)
+// 핑 종류 (휠: 위 ⚠️ · 아래 ❓ · 오른쪽 👀 · 왼쪽 🏃 · 가운데 📍)
+const PING_KINDS = ['here', 'what', 'look', 'warn', 'omw'];
+const PING_TEXT = { here: '📍', what: '❓', look: '👀', warn: '⚠️', omw: '🏃' };
+// 각 탭에 핑 설정을 알림: Jam 탭에서만 켜짐 (다른 탭의 Alt+클릭은 그대로 페이지로)
+const pingCfgSent = new WeakMap();
+function pushPingConfig(only) {
+  for (const t of only ? [only] : tabs) {
+    if (!t.ready && !only) continue;
+    const cfg = { on: !!(pref('pingEnabled') && jam.active && t === jam.tab), key: pref('pingKey') };
+    const key = JSON.stringify(cfg);
+    if (!only && pingCfgSent.get(t) === key) continue;
+    pingCfgSent.set(t, key);
+    t.webview.send('jam:ping-config', cfg);
+  }
+}
+
 // 📍 버튼: 누른 뒤 다음 클릭 자리에 핑 (화면 미러링을 보고 있으면 그 화면 위에)
 function setPingMode(on) {
   jam.pingMode = !!on;
@@ -1237,7 +1254,7 @@ function onJamPageEvent(tab, channel, data) {
       // 내가 찍은 핑: 모두에게 보내고 내 화면에도 표시
       setPingMode(false);
       if (!pref('pingEnabled') || !isShareable(url)) break;
-      const k = ['here', 'look', 'warn'].includes(data.k) ? data.k : 'here';
+      const k = PING_KINDS.includes(data.k) ? data.k : 'here';
       jam.send({ type: 'ping', url, x: data.x, y: data.y, a: data.a, k });
       const me = jam.me();
       tab.webview.send('jam:ping', { id: `me-${Date.now()}`, name: me?.name || '나', color: me?.color, x: data.x, y: data.y, a: data.a, k, sec: pref('pingSeconds') });
@@ -1418,7 +1435,7 @@ function handleMessage(msg) {
       // 다른 사람이 찍은 핑: 같은 페이지면 그 자리에, 아니면 알림
       const m = jam.member(msg.by);
       if (!m || !pref('pingEnabled')) break;
-      const icon = { here: '📍', look: '👀', warn: '⚠️' }[msg.k] || '📍';
+      const icon = PING_TEXT[msg.k] || '📍';
       if (tab?.ready && sameDoc(msg.url, tab.url)) {
         tab.webview.send('jam:ping', { id: `${msg.by}-${Date.now()}`, name: m.name, color: m.color, x: msg.x, y: msg.y, a: msg.a, k: msg.k, sec: pref('pingSeconds') });
       } else if (pref('pingToastOther')) {
@@ -1484,6 +1501,7 @@ function renderJam() {
   renderNearby();
   mirror.render();
   jamFiles.render();
+  pushPingConfig();
   if (!jam.active) return;
   $('#nearby-row').hidden = !jam.isHost();
 

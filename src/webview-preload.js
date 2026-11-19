@@ -1110,12 +1110,43 @@ function applyMirrorLayer() {
 //  - 받은 핑은 반짝이는 표시 + 이름, 화면 밖이면 가장자리에 화살표(누르면 그 자리로 스크롤)
 //  - 화면 미러링 중에도 숨기지 않음 (영상에 같이 보여야 하므로)
 // ======================================================================
-const PING_ICON = { here: '📍', look: '👀', warn: '⚠️' };
+// 핑 종류 · 그림 · 핑 휠 (Alt 또는 G 를 누른 채 드래그해서 방향으로 고르기)
+const PING_ICON = { here: '📍', what: '❓', look: '👀', warn: '⚠️', omw: '🏃' };
+const PING_LABEL = { here: '여기', what: '뭐지?', look: '이거 봐', warn: '조심', omw: '갈게요' };
+// 휠 방향: 위 = 조심, 아래 = 뭐지?, 오른쪽 = 이거 봐, 왼쪽 = 갈게요, 안 움직이면 = 여기
+const WHEEL_DIRS = { up: 'warn', down: 'what', right: 'look', left: 'omw' };
+const WHEEL_DEAD = 22; // 이만큼(px) 안 움직이면 가운데(📍)
+let pingCfg = { on: false, key: 'alt' }; // 앱이 알려 줌: Jam 탭일 때만 켜짐
 let pingMode = null; // { k } — 앱의 📍 버튼을 누른 뒤 다음 클릭
 let swallowClick = 0;
 let pingBox = null;
 let pingEdge = null;
+let gHeld = false;
+let wheel = null; // { x, y, page: {x, y}, a, el, slices, k, quick }
 const pings = new Map(); // id → { el, edge, until, pos }
+
+// 노란 물음표 (직접 그린 그림 — 윈도우의 ❓ 이모지는 빨간색이라서)
+function whatIcon(size) {
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  const set = (el, attrs) => {
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+    return el;
+  };
+  set(svg, { viewBox: '0 0 32 32', width: size, height: size });
+  const mk = (tag, attrs) => svg.appendChild(set(document.createElementNS(SVG_NS, tag), attrs));
+  mk('circle', { cx: 16, cy: 16, r: 14, fill: '#ffd43b', stroke: '#1d1d1d', 'stroke-width': 2.4 });
+  mk('ellipse', { cx: 11.5, cy: 9.5, rx: 6, ry: 3.2, fill: '#fff', opacity: 0.38 });
+  mk('path', { d: 'M11.6 12.4c0-2.7 2-4.5 4.5-4.5 2.6 0 4.5 1.7 4.5 3.9 0 3.5-4.3 3.6-4.3 6.9', fill: 'none', stroke: '#1d1d1d', 'stroke-width': 3.3, 'stroke-linecap': 'round', 'stroke-linejoin': 'round' });
+  mk('circle', { cx: 16.3, cy: 23.7, r: 2.1, fill: '#1d1d1d' });
+  return svg;
+}
+/** 핑 종류의 그림 (물음표는 그린 그림, 나머지는 이모지) */
+function pingIcon(k, size) {
+  if (k === 'what') return whatIcon(size);
+  const s = css(document.createElement('span'), { font: `${Math.round(size * 0.86)}px/1 "Segoe UI Emoji",sans-serif`, display: 'inline-block', 'line-height': `${size}px` });
+  s.textContent = PING_ICON[k] || '📍';
+  return s;
+}
 
 function pingLayer() {
   const l = getLayer();
@@ -1131,21 +1162,119 @@ function setPingCursor(on) {
     document.documentElement.style.cursor = on ? 'crosshair' : '';
   } catch {}
 }
+
+// ---- 핑 휠 ----
+function wheelKind(dx, dy) {
+  if (Math.hypot(dx, dy) < WHEEL_DEAD) return 'here';
+  if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? WHEEL_DIRS.right : WHEEL_DIRS.left;
+  return dy < 0 ? WHEEL_DIRS.up : WHEEL_DIRS.down;
+}
+function openWheel(e, quick) {
+  const { root } = pingLayer();
+  const el = css(document.createElement('div'), {
+    // 화면 가장자리에서 눌러도 휠이 잘리지 않게 (방향은 누른 자리 기준 그대로)
+    position: 'fixed', left: `${Math.min(Math.max(e.clientX, 96), Math.max(96, window.innerWidth - 96))}px`, top: `${Math.min(Math.max(e.clientY, 96), Math.max(96, window.innerHeight - 96))}px`, width: '0', height: '0', 'z-index': '5', 'pointer-events': 'none',
+  });
+  const disc = css(document.createElement('div'), {
+    position: 'absolute', left: '-92px', top: '-92px', width: '184px', height: '184px', 'border-radius': '50%',
+    background: 'radial-gradient(circle, rgba(20,20,22,.55) 0 30%, rgba(20,20,22,.78) 31% 100%)', border: '2px solid rgba(255,255,255,.25)',
+    'box-shadow': '0 6px 24px rgba(0,0,0,.45)', 'backdrop-filter': 'blur(2px)',
+  });
+  disc.animate([{ transform: 'scale(.6)', opacity: 0 }, { transform: 'scale(1)', opacity: 1 }], { duration: 120, easing: 'ease-out' });
+  el.appendChild(disc);
+  const pos = { here: [0, 0], warn: [0, -60], what: [0, 60], look: [60, 0], omw: [-60, 0] };
+  const slices = {};
+  for (const [k, [x, y]] of Object.entries(pos)) {
+    const b = css(document.createElement('div'), {
+      position: 'absolute', left: `${x - 30}px`, top: `${y - 24}px`, width: '60px', height: '48px', display: 'flex', 'flex-direction': 'column',
+      'align-items': 'center', 'justify-content': 'center', gap: '1px', 'border-radius': '12px', transition: 'transform .08s, background .08s',
+      color: '#fff', font: '600 11px/1.1 "Segoe UI","Malgun Gothic",sans-serif', 'text-shadow': '0 1px 2px rgba(0,0,0,.8)',
+    });
+    b.append(pingIcon(k, 24));
+    const t = document.createElement('span');
+    t.textContent = PING_LABEL[k];
+    b.appendChild(t);
+    el.appendChild(b);
+    slices[k] = b;
+  }
+  const dot = css(document.createElement('div'), { position: 'absolute', left: '-4px', top: '-4px', width: '8px', height: '8px', 'border-radius': '50%', background: '#fff', opacity: '.8' });
+  el.appendChild(dot);
+  root.appendChild(el);
+  const { w, h } = docSize();
+  wheel = { x: e.clientX, y: e.clientY, page: { x: e.pageX / w, y: e.pageY / h }, a: anchorAt(e.clientX, e.clientY), el, dot, slices, k: quick || 'here', quick };
+  highlightWheel();
+}
+function highlightWheel() {
+  for (const [k, b] of Object.entries(wheel.slices)) {
+    const on = k === wheel.k;
+    css(b, { transform: on ? 'scale(1.18)' : 'scale(1)', background: on ? 'rgba(255,212,59,.28)' : 'transparent' });
+  }
+}
+function closeWheel(sendIt) {
+  const wl = wheel;
+  wheel = null;
+  if (!wl) return;
+  wl.el.remove();
+  setPingCursor(false);
+  if (sendIt) send('jam:ping', { x: wl.page.x, y: wl.page.y, a: wl.a, k: wl.k });
+}
+
 window.addEventListener(
   'mousedown',
   (e) => {
-    if (!e.isTrusted || e.button !== 0) return;
-    const mode = pingMode;
-    if (!mode && !e.altKey) return;
+    if (!e.isTrusted) return;
+    if (wheel) {
+      // 휠이 열린 채 오른쪽 버튼 → 취소
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.button === 2) closeWheel(false);
+      return;
+    }
+    if (e.button !== 0 || !pingCfg.on) return;
+    const held = pingCfg.key === 'g' ? gHeld : e.altKey;
+    if (!pingMode && !held) return;
     if (armedFor && armedFor('mouse')) return; // 화면 미러링 원격 조작은 핑이 아님
     e.preventDefault();
     e.stopImmediatePropagation();
-    swallowClick = Date.now() + 1000; // 뒤따르는 click 도 페이지에 안 가게
-    const k = mode ? mode.k : e.shiftKey ? 'warn' : 'here';
+    swallowClick = Date.now() + 1500; // 뒤따르는 click 도 페이지에 안 가게
     pingMode = null;
-    setPingCursor(false);
-    const { w, h } = docSize();
-    send('jam:ping', { x: e.pageX / w, y: e.pageY / h, a: anchorAt(e.clientX, e.clientY), k });
+    openWheel(e, e.shiftKey ? 'warn' : null);
+  },
+  true
+);
+window.addEventListener(
+  'mousemove',
+  (e) => {
+    if (!wheel) return;
+    const dx = e.clientX - wheel.x;
+    const dy = e.clientY - wheel.y;
+    const k = Math.hypot(dx, dy) < WHEEL_DEAD && wheel.quick ? wheel.quick : wheelKind(dx, dy);
+    const r = Math.min(70, Math.hypot(dx, dy));
+    const ang = Math.atan2(dy, dx);
+    css(wheel.dot, { transform: `translate(${Math.cos(ang) * r}px, ${Math.sin(ang) * r}px)` });
+    if (k !== wheel.k) {
+      wheel.k = k;
+      highlightWheel();
+    }
+  },
+  true
+);
+window.addEventListener(
+  'mouseup',
+  (e) => {
+    if (!wheel || e.button !== 0) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    closeWheel(true);
+  },
+  true
+);
+window.addEventListener(
+  'contextmenu',
+  (e) => {
+    if (!wheel && Date.now() > swallowClick) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
   },
   true
 );
@@ -1160,21 +1289,53 @@ window.addEventListener(
   },
   true
 );
+const typingTarget = (t) => !!t && (t.isContentEditable || /^(input|textarea|select)$/i.test(t.tagName || ''));
 window.addEventListener(
   'keydown',
   (e) => {
-    if (pingMode && e.key === 'Escape') {
+    if (e.key === 'Escape' && (pingMode || wheel)) {
       pingMode = null;
+      closeWheel(false);
       setPingCursor(false);
       send('jam:ping-mode-off', {});
+      return;
+    }
+    // G 를 누른 채 클릭 (설정에서 고른 경우만, 글자 칸에서는 아님)
+    if (pingCfg.on && pingCfg.key === 'g' && e.code === 'KeyG' && !e.ctrlKey && !e.altKey && !e.metaKey && !typingTarget(deepActive())) {
+      gHeld = true;
+      if (!e.repeat) setPingCursor(true);
     }
   },
   true
 );
+window.addEventListener(
+  'keyup',
+  (e) => {
+    if (e.code === 'KeyG' && gHeld) {
+      gHeld = false;
+      if (!wheel && !pingMode) setPingCursor(false);
+    }
+  },
+  true
+);
+window.addEventListener('blur', () => {
+  gHeld = false;
+  closeWheel(false);
+});
 ipcRenderer.on('jam:ping-mode', (_e, d) => {
-  pingMode = d && d.on ? { k: PING_ICON[d.k] ? d.k : 'here' } : null;
+  pingMode = d && d.on ? { k: 'here' } : null;
   setPingCursor(!!pingMode);
 });
+// 앱이 알려 주는 핑 설정: Jam 탭일 때만 켜짐 (다른 탭의 Alt+클릭은 그대로 페이지로)
+ipcRenderer.on('jam:ping-config', (_e, c) => {
+  pingCfg = { on: !!(c && c.on), key: c && c.key === 'g' ? 'g' : 'alt' };
+  if (!pingCfg.on) {
+    pingMode = null;
+    closeWheel(false);
+    setPingCursor(false);
+  }
+});
+window.addEventListener('DOMContentLoaded', () => send('jam:ping-hello', {}));
 
 function placePing(id, pos, d) {
   const { root } = pingLayer();
@@ -1194,17 +1355,18 @@ function placePing(id, pos, d) {
     r.animate([{ transform: 'scale(.4)', opacity: 1 }, { transform: 'scale(1.9)', opacity: 0 }], { duration: 1100, delay, iterations: Infinity, easing: 'ease-out' });
     return r;
   };
+  const kind = PING_ICON[d.k] ? d.k : 'here';
   const pin = css(document.createElement('div'), {
-    position: 'absolute', left: '-14px', top: '-32px', width: '28px', height: '28px', 'text-align': 'center',
-    font: '24px/28px "Segoe UI Emoji",sans-serif', filter: 'drop-shadow(0 2px 2px rgba(0,0,0,.45))',
+    position: 'absolute', left: '-15px', top: '-34px', width: '30px', height: '30px', display: 'flex', 'align-items': 'center', 'justify-content': 'center',
+    filter: 'drop-shadow(0 2px 2px rgba(0,0,0,.45))',
   });
-  pin.textContent = PING_ICON[d.k] || '📍';
+  pin.appendChild(pingIcon(kind, 30));
   pin.animate([{ transform: 'translateY(-14px)' }, { transform: 'translateY(0)' }], { duration: 320, easing: 'cubic-bezier(.3,1.6,.6,1)' });
   const label = css(document.createElement('div'), {
     position: 'absolute', left: '14px', top: '-30px', padding: '2px 8px', 'border-radius': '999px', 'white-space': 'nowrap',
     background: color, color: '#0b0b0b', font: '600 12px/18px "Segoe UI","Malgun Gothic",sans-serif', 'box-shadow': '0 1px 4px rgba(0,0,0,.35)',
   });
-  label.textContent = String(d.name || '').slice(0, 24);
+  label.textContent = `${String(d.name || '').slice(0, 24)} · ${PING_LABEL[kind]}`;
   el.append(ring(0), ring(450), pin, label);
   pingBox.appendChild(el);
   // 화면 밖이면 가장자리 화살표 (누르면 그 자리로)
@@ -1222,7 +1384,7 @@ function placePing(id, pos, d) {
   });
   pingEdge.appendChild(edge);
   const sec = Math.min(30, Math.max(2, Number(d.sec) || 6));
-  const rec = { el, edge, pos, icon: pin.textContent, name: label.textContent, until: Date.now() + sec * 1000 };
+  const rec = { el, edge, pos, kind, name: label.textContent, until: Date.now() + sec * 1000 };
   pings.set(id, rec);
   updatePingEdges();
   setTimeout(() => {
@@ -1235,17 +1397,24 @@ function placePing(id, pos, d) {
     }, 320);
   }, sec * 1000);
   const onscreen = pos.y >= window.scrollY && pos.y <= window.scrollY + window.innerHeight;
-  send('jam:ping-shown', { id, onscreen });
+  send('jam:ping-shown', { id, onscreen, k: kind });
 }
 function updatePingEdges() {
   for (const p of pings.values()) {
     const vy = p.pos.y - window.scrollY;
+    const fill = (arrow) => {
+      if (p.edge.dataset.dir === arrow) return;
+      p.edge.dataset.dir = arrow;
+      const ic = pingIcon(p.kind, 18);
+      css(ic, { 'vertical-align': '-4px', margin: '0 4px' });
+      p.edge.replaceChildren(arrow, ic, p.name);
+    };
     if (vy < 0) {
       css(p.edge, { display: 'block', top: '8px', bottom: '' });
-      p.edge.textContent = `▲ ${p.icon} ${p.name}`;
+      fill('▲');
     } else if (vy > window.innerHeight) {
       css(p.edge, { display: 'block', top: '', bottom: '8px' });
-      p.edge.textContent = `▼ ${p.icon} ${p.name}`;
+      fill('▼');
     } else p.edge.style.display = 'none';
   }
 }
