@@ -4,8 +4,9 @@
 #   powershell -ExecutionPolicy Bypass -File test\e2e-jam\run.ps1 -Tests ping,files
 #   ... -Packaged        # use dist\win-unpacked\Jam Browser.exe (run `npx electron-builder --win --dir` first)
 #   ... -Relay <path to jam-relay.js>   # default: ..\jam-backend-build\jam-relay.js next to this repo, or $env:JAM_E2E_RELAY
+#   ... -Tests update   # auto-update signature check: needs dist\win-unpacked + $env:JAM_BROWSER_RELEASE_KEY (the test starts its own app)
 param(
-  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'tabs', 'smoke'),
+  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'tabs', 'smoke', 'update'),
   [switch]$Packaged,
   [string]$Relay = $env:JAM_E2E_RELAY
 )
@@ -17,6 +18,9 @@ $app = (Resolve-Path "$here\..\..").Path
 $P = @{ host = $(if ($env:JAM_E2E_HOST_PORT) { $env:JAM_E2E_HOST_PORT } else { 9301 }); guest = $(if ($env:JAM_E2E_GUEST_PORT) { $env:JAM_E2E_GUEST_PORT } else { 9302 }) }
 if (-not $Relay) { $cand = Join-Path (Split-Path $app -Parent) 'jam-backend-build\jam-relay.js'; if (Test-Path $cand) { $Relay = $cand } }
 # tests that go through a local relay, and the relay's per-guest limit for each
+# tests that start their own app (update: packaged app + local update server). Starting the usual two apps first
+# would hold the same debug port, so the test would talk to the wrong app
+$selfLaunch = @('update')
 $viaRelay = @{ resume = 0; 'nearby' = 0; 'mirror' = 0; 'files' = 0; 'relay-cap' = 0.5 }
 $exe = if ($Packaged) { "$app\dist\win-unpacked\Jam Browser.exe" } else { "$app\node_modules\electron\dist\electron.exe" }
 if (-not (Test-Path $exe)) { Write-Host "App not found: $exe" -ForegroundColor Red; exit 2 }
@@ -36,6 +40,19 @@ foreach ($t in $Tests) {
   if (-not (Test-Path $script)) { Write-Host "no such test: $t" -ForegroundColor Yellow; continue }
   Write-Host "== $t" -ForegroundColor Cyan
   Stop-Apps; Start-Sleep -Seconds 2
+  if ($selfLaunch -contains $t) {
+    $env:JAM_TEST_OFFSCREEN = '1'
+    $enc = [Console]::OutputEncoding; [Console]::OutputEncoding = [Text.Encoding]::UTF8  # node 출력(UTF-8)을 그대로 읽게
+    $out = @(node $script $app 2>&1 | ForEach-Object { "$_" })
+    [Console]::OutputEncoding = $enc
+    $code = $LASTEXITCODE
+    Remove-Item Env:JAM_TEST_OFFSCREEN -ErrorAction SilentlyContinue
+    $out | ForEach-Object { Write-Host $_ }
+    Stop-Apps
+    $skipped = $out -match [regex]::Unescape('\uac74\ub108\ub700')  # the test prints this word when the key or packaged app is missing
+    $results += $(if ($code -ne 0) { "$t FAILED" } elseif ($skipped) { "$t SKIPPED" } else { "$t OK" })
+    continue
+  }
   foreach ($d in @("$here\ud-host", "$here\ud-guest")) { if (Test-Path $d) { Remove-Item -Recurse -Force $d -Confirm:$false } }
   $relayProc = $null; $relayPort = ''
   if ($viaRelay.ContainsKey($t)) {
