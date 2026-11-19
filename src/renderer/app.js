@@ -407,6 +407,7 @@ function updateToolbar() {
   $('#jam-tab-flag').hidden = t !== jam.tab;
   $('#lock-flag').hidden = !(t === jam.tab && jam.active && !jam.canCrossSite());
   $('#add-to-queue').disabled = !jam.active || !isShareable(t.url);
+  if (typeof updateShield === 'function') updateShield();
 }
 
 // ---------- 주소창 / 버튼 ----------
@@ -814,7 +815,8 @@ async function startJam() {
     const { ws, welcome, keys } = await connect(
       serverUrl,
       // allow: 친구 신원 지문 목록 → 내 PC 의 Jam 서버에만 전달 (참여자 · 중계 서버로는 나가지 않음)
-      { type: 'create', name, url: tab.url, title: tab.title, access, allow: account.friendFps() },
+      // self: 내 계정 지문 → 같은 계정의 다른 기기는 승인 없이 (다른 기기에서 이어 보기)
+      { type: 'create', name, url: tab.url, title: tab.title, access, allow: account.friendFps(), self: account.selfFp() },
       { secret }
     );
     jam.serverUrl = serverUrl;
@@ -826,6 +828,7 @@ async function startJam() {
       ? `${relay?.route ? '같은 네트워크 친구용' : '다른 네트워크 주소'}: ${altHosts.map((h) => `${h}/${code}/${secret}`).join(', ')}`
       : '';
     renderJam();
+    if (relay?.route && window.jamResume) jamResume.publish(jam.invite, tab.title);
     toast('Jam을 시작했어요! 초대 코드를 친구에게 보내세요');
   } catch (err) {
     console.error(err);
@@ -1567,7 +1570,7 @@ function renderMembers(force = false) {
     canView: m.id !== jam.you.id && m.view && jam.tab && sameDoc(m.view.url, jam.tab.url),
   }));
   // 내용이 같으면 다시 그리지 않는다 (버튼 클릭이 끊기지 않게)
-  const key = JSON.stringify([host, jam.room.hostId, jam.room.settings, !!jam.room.mirror, mirror.isMirroring(), rows.map((r) => [r.m.id, r.m.name, r.m.canCrossSite, r.status, !!r.canView, !!r.m.friend, !!r.m.verified, JSON.stringify(r.m.control)])]);
+  const key = JSON.stringify([host, jam.room.hostId, jam.room.settings, !!jam.room.mirror, mirror.isMirroring(), rows.map((r) => [r.m.id, r.m.name, r.m.canCrossSite, r.status, !!r.canView, !!r.m.friend, !!r.m.self, !!r.m.verified, JSON.stringify(r.m.control)])]);
   if (!force && key === membersKey) return;
   membersKey = key;
 
@@ -1589,7 +1592,9 @@ function renderMembers(force = false) {
             m.name,
             isMe ? el('span', { class: 'muted' }, ' (나)') : null,
             isRoomHost ? el('span', { class: 'tag' }, '👑') : null,
-            m.friend
+            m.self
+              ? el('span', { class: 'badge-friend', title: '호스트와 같은 브라우저 계정 (다른 기기, 서명으로 확인됨)' }, '💻')
+              : m.friend
               ? el('span', { class: 'badge-friend', title: '호스트의 친구 (서명으로 본인 확인됨)' }, '⭐')
               : m.verified
                 ? el('span', { class: 'badge-friend', title: '브라우저 계정 서명으로 본인 확인됨' }, '🔏')

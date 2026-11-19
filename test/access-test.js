@@ -171,7 +171,42 @@ function client(port) {
   await host.nothing('members');
   ok('참여자는 입장 방식 · 친구 목록을 바꿀 수 없음');
 
-  for (const c of [host, a, b2, free]) c.ws.close();
+  // 다른 기기에서 이어 보기: 호스트와 같은 브라우저 계정(같은 신원 키)이면 입장 방식과 상관없이 승인 없이
+  const mine = ID.newIdentity();
+  const s2 = newSecret();
+  const h2 = client(port);
+  await h2.open();
+  await h2.create('나', s2, { access: 'approval', allow: [], self: ID.fingerprint(mine.pub) });
+  const code2 = (await h2.next('welcome')).room.code;
+  const laptop = client(port);
+  await laptop.open();
+  await laptop.join('나 (노트북)', code2, s2, mine);
+  const lw = await laptop.next('welcome');
+  assert.equal(lw.you.self, true);
+  await h2.nothing('join-request');
+  const stranger = client(port);
+  await stranger.open();
+  await stranger.join('남', code2, s2, bob);
+  await h2.next('join-request', (m) => m.name === '남');
+  ok('같은 계정의 다른 기기는 "링크 + 승인" 이어도 바로 입장, 다른 사람은 그대로 승인 요청');
+  const fakeMe = client(port);
+  await fakeMe.open();
+  await fakeMe.join('가짜 나', code2, s2, { pub: mine.pub, priv: bob.priv });
+  assert.equal((await fakeMe.next('error')).code, 'bad-identity');
+  const noId = client(port);
+  await noId.open();
+  await noId.join('나 (서명 없음)', code2, s2, null);
+  await h2.next('join-request', (m) => m.name === '나 (서명 없음)');
+  ok('내 공개 키만 가져와서는 못 들어옴 (서명 확인), 서명 없으면 보통 승인 요청');
+  h2.send({ type: 'settings', access: 'friends', allow: [] });
+  await new Promise((r) => setTimeout(r, 100));
+  const phone = client(port);
+  await phone.open();
+  await phone.join('나 (휴대폰)', code2, s2, mine);
+  assert.equal((await phone.next('welcome')).you.self, true);
+  ok('"친구만" 으로 바꿔도 내 다른 기기는 들어옴 (친구 목록이 비어 있어도)');
+
+  for (const c of [host, a, b2, free, h2, laptop, stranger, fakeMe, noId, phone]) c.ws.close();
   await server.close();
   console.log(`\n입장 방식 · 친구 신원 테스트 통과 (${n}개)`);
   process.exit(0);

@@ -11,12 +11,13 @@
     "postinstall": "node scripts/build-toolbar-preload.js",
     "start": "electron .",
     "jam": "node scripts/jam-dev.js",
-    "test": "node test/sync-test.js && node test/relay-test.js && node test/vault-test.js && node test/access-test.js && node test/nearby-test.js && node test/mirror-test.js && node test/files-test.js && node test/settings-test.js && node test/ping-test.js && node test/update-test.js",
+    "test": "node test/sync-test.js && node test/relay-test.js && node test/vault-test.js && node test/access-test.js && node test/nearby-test.js && node test/mirror-test.js && node test/files-test.js && node test/settings-test.js && node test/ping-test.js && node test/update-test.js && node test/siteguard-test.js && node test/presence-test.js",
     "icon": "electron scripts/make-icon.js",
     "dist": "electron-builder --win --publish never",
     "release": "electron-builder --win --publish always"
   },
   "dependencies": {
+    "@ghostery/adblocker": "2.20.3",
     "@ruffle-rs/ruffle": "0.7.1",
     "electron-chrome-extensions": "^4.10.0",
     "electron-chrome-web-store": "^0.13.0",

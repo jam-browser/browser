@@ -21,6 +21,7 @@ const MIRROR = require('../shared/mirror');
 // 입장 방식: approval = 링크 + 호스트 승인(기본) · friends = 링크를 가진 친구만(자동 입장) · open = 링크만 있으면 자유 입장
 const ACCESS = new Set(['approval', 'friends', 'open']);
 const cleanAllow = (list) => new Set((Array.isArray(list) ? list : []).filter((x) => /^[A-Z0-9]{24}$/.test(String(x))).slice(0, 500));
+const cleanSelf = (x) => (/^[A-Z0-9]{24}$/.test(String(x || "")) ? String(x) : null);
 
 const MAX_CONNS_PER_IP = 10;
 const AUTH_TIMEOUT = 10000; // 접속 후 10초 안에 인증 못 하면 끊음
@@ -210,6 +211,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     verified: !!m.fp, // 브라우저 계정 서명으로 신원이 확인됨
     control: MIRROR.normControl(m.control), // 화면 미러링 조작 권한 { m: 마우스, k: 키 묶음 }
     friend: !!m.friend, // 호스트의 친구 목록에 있음
+    self: !!m.self, // 호스트와 같은 브라우저 계정 (다른 기기)
   });
   // 설정은 참여자에게 보낼 때 호스트의 친구 목록(allow)을 빼고 보낸다
   const publicSettings = (room) => ({
@@ -380,6 +382,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         name,
         fp: who.fp || null,
         friend: !!who.friend,
+        self: !!who.self,
         color: COLORS[room.colorIndex++ % COLORS.length],
         ws,
         canCrossSite: false,
@@ -421,6 +424,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           current: isShareable(msg.url) ? { url: msg.url, title: cleanText(msg.title, 200), by: null } : null,
           settings: { allowAllCrossSite: false, access: ACCESS.has(msg.access) ? msg.access : 'approval' },
           allow: cleanAllow(msg.allow), // 호스트의 친구 지문 목록 (호스트 PC 안에서만, 참여자에게 보내지 않음)
+          self: cleanSelf(msg.self), // 호스트 자신의 계정 지문: 같은 계정의 다른 기기는 승인 없이 (다른 기기에서 이어 보기)
           media: null,
           mirror: null, // 화면 미러링: { sid, by, w, h, title, at }
           files: new Map(), // 같이 보는 파일: fid → { meta, n, chunks, got, ready, data }
@@ -463,6 +467,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           }
           who = { fp: ID.fingerprint(inner.id.pub) };
           who.friend = target.allow.has(who.fp);
+          who.self = !!target.self && who.fp === target.self;
         }
       }
       ws.keys = target.keys;
@@ -481,6 +486,8 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         target.tickets.delete(ticket);
         if (t.exp > Date.now()) return enterRoom(target, name, 'join', who.fp ? who : t.who);
       }
+      // 같은 브라우저 계정(호스트 본인)의 다른 기기: 서명으로 확인됐으니 입장 방식과 상관없이 바로
+      if (who.self) return enterRoom(target, name, 'join', who);
       const access = target.settings.access;
       if (access === 'friends') {
         if (!who.friend) {
@@ -502,6 +509,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
         ip: ip.replace(/^::ffff:/, ''),
         fp: who.fp || null,
         friend: !!who.friend,
+        self: !!who.self,
         ...extra,
         accept: () => {
           pending = null;
@@ -1029,6 +1037,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
             const label = { approval: '링크 + 호스트 승인', friends: '링크를 가진 친구만', open: '링크만 있으면 자유 입장' }[msg.access];
             broadcast(room, { type: 'system', text: `입장 방식이 "${label}" 으로 바뀌었어요` });
           }
+          if (typeof msg.self === 'string' || msg.self === null) room.self = cleanSelf(msg.self);
           if (Array.isArray(msg.allow)) {
             room.allow = cleanAllow(msg.allow);
             for (const m of room.members.values()) m.friend = !!m.fp && room.allow.has(m.fp);

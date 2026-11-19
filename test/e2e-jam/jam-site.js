@@ -8,6 +8,31 @@ http
       res.writeHead(200, { 'Content-Type': 'application/pdf' });
       return res.end(require('fs').readFileSync(require('path').join(__dirname, 'fixtures', 'test-5p.pdf')));
     }
+    // 사이트 보호 E2E: 추적기(목록: fixtures/blocklist.txt) · 서드파티 쿠키 · 권한
+    if (u.pathname === '/trk.js') {
+      res.writeHead(200, { 'Content-Type': 'text/javascript' });
+      return res.end('window.__trk = 1;');
+    }
+    if (u.pathname === '/trk.gif' || u.pathname === '/ok.gif') {
+      res.writeHead(200, { 'Content-Type': 'image/gif' });
+      return res.end(Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64'));
+    }
+    if (u.pathname === '/setck') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Set-Cookie': 'jamck=yes; Path=/; Max-Age=3600; SameSite=None; Secure' });
+      return res.end(page('Set cookie', '<h1>cookie set</h1>'));
+    }
+    if (u.pathname === '/showck') {
+      global.__lastCookie = { cookie: req.headers.cookie || '', at: Date.now() };
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(page('Show cookie', 'cookie: ' + (req.headers.cookie || '(none)')));
+    }
+    if (u.pathname === '/lastck') return res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(global.__lastCookie || null));
+    if (u.pathname === '/track') {
+      const other = u.searchParams.get('other') || (req.headers.host.startsWith('127.') ? 'http://localhost:8766' : 'http://127.0.0.1:8766');
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(page('Track', `<h1>Tracked page</h1><script src="${other}/trk.js"></script><img src="${other}/trk.gif"><img src="${other}/ok.gif" id="ok">
+<iframe src="${other}/showck" width="300" height="60"></iframe>`));
+    }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     if (u.pathname === '/pwlogin') {
       return res.end(page('PW Login', `<h1>Sign in</h1><form method="post" action="/pwdone">

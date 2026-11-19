@@ -33,6 +33,8 @@
     { key: 'nearbyAnnounce', page: 'set-jam', group: '근처 찾기 (같은 네트워크, UDP 3032)', label: '내 Jam 을 근처에 알리기', type: 'bool', def: true, main: true, help: 'Jam 이름 · 호스트 이름 · 접속 주소만 알려요. 초대 비밀키는 보내지 않아요' },
     { key: 'nearbyScan', page: 'set-jam', group: '근처 찾기 (같은 네트워크, UDP 3032)', label: '근처 Jam 찾기', type: 'bool', def: true, main: true },
     { key: 'nearbyIntervalSec', page: 'set-jam', group: '근처 찾기 (같은 네트워크, UDP 3032)', label: '알림 간격', type: 'number', def: 2, min: 1, max: 30, unit: '초', main: true },
+    { key: 'resumePublish', page: 'set-jam', group: '다른 기기에서 이어 보기 (같은 브라우저 계정)', label: '내가 연 Jam 을 내 다른 기기에서 찾을 수 있게', type: 'bool', def: true, main: true, help: '중계 서버로 연 Jam 만. 서버에는 무작위 ID 와 암호문만 맡기고(Jam 이 열려 있는 동안 · 메모리에만), 같은 계정으로 잠금을 푼 기기만 풀 수 있어요. 같은 계정 기기는 승인 없이 들어와요' },
+    { key: 'resumeAutoFind', page: 'set-jam', group: '다른 기기에서 이어 보기 (같은 브라우저 계정)', label: '계정 잠금을 풀면 내 다른 기기의 Jam 찾기', type: 'bool', def: true },
     { key: 'pingEnabled', page: 'set-jam', group: '핑', label: '핑 찍기 · 보기', type: 'bool', def: true, help: '핑 키를 누른 채 클릭 → 휠이 열리면 방향으로 끌어서 고르기: 위 ⚠️ 조심 · 아래 ❓ 뭐지? · 오른쪽 👀 이거 봐 · 왼쪽 🏃 갈게요 · 그대로 놓으면 📍 여기' },
     { key: 'pingKey', page: 'set-jam', group: '핑', label: '핑 키 (누른 채 클릭 · 드래그)', type: 'select', def: 'alt', options: [['alt', 'Alt'], ['g', 'G (글자 칸 밖에서만, 게임 키와 겹칠 수 있어요)']] },
     { key: 'pingSeconds', page: 'set-jam', group: '핑', label: '핑 표시 시간', type: 'number', def: 6, min: 2, max: 30, unit: '초' },
@@ -68,6 +70,10 @@
 
     // ---------- 보안 · 개인정보 ----------
     { key: 'httpsFirst', page: 'set-security', group: '접속', label: 'HTTPS 우선 (http 주소를 https 로 먼저 시도)', type: 'bool', def: true, main: true, help: 'https 가 안 되는 사이트만 http 로 열어요. 같은 네트워크(사설 IP · localhost)는 그대로' },
+    { key: 'contentBlock', page: 'set-security', group: '추적 · 광고 (주소창 🛡 에서 사이트마다 끌 수 있어요)', label: '차단', type: 'select', def: 'trackers', main: true, options: [['trackers', '추적기 차단 (권장 · 페이지 모양은 그대로)'], ['ads', '추적기 + 광고 차단'], ['off', '끔']], help: 'EasyPrivacy · uBlock 목록으로 웹페이지가 부르는 추적 · 광고 주소를 막아요. 광고까지 막으면 Jam 상대와 페이지 모양이 조금 다를 수 있어요', warnOff: '끄면 사이트를 옮겨 다니며 나를 추적하는 요청이 그대로 나가요' },
+    { key: 'blockListHours', page: 'set-security', group: '추적 · 광고 (주소창 🛡 에서 사이트마다 끌 수 있어요)', label: '차단 목록 새로 받기', type: 'number', def: 24, min: 6, max: 168, unit: '시간마다', main: true },
+    { key: 'thirdPartyCookies', page: 'set-security', group: '추적 · 광고 (주소창 🛡 에서 사이트마다 끌 수 있어요)', label: '서드파티 쿠키', type: 'select', def: 'block', main: true, options: [['block', '차단 (보고 있는 사이트의 쿠키만)'], ['allow', '허용']], help: '다른 회사가 여러 사이트에 심어 둔 쿠키로 나를 따라오는 것을 막아요. 로그인이 안 되는 사이트는 🛡 에서 그 사이트만 허용하세요' },
+    { key: 'permPrompt', page: 'set-security', group: '사이트 권한 (위치 · 알림 · 카메라 · 마이크 · 클립보드 읽기 · MIDI)', label: '사이트가 권한을 요청하면', type: 'select', def: 'ask', main: true, options: [['ask', '물어보기 (답을 사이트마다 기억)'], ['deny', '묻지 않고 모두 거절']], help: '허용 · 차단한 사이트는 아래 목록이나 주소창 🛡 에서 바꿀 수 있어요. 화면 캡처 · 그 밖의 권한은 항상 거절해요' },
     { key: 'lookalikeWarn', page: 'set-security', group: '로그인 · 비밀번호', label: '저장한 사이트와 비슷한 가짜 주소 경고', type: 'bool', def: true, main: true, help: '예) naver.com 을 저장했는데 navver.com · xn--… 에서 로그인 칸이 보이면 경고하고 🔑 채우기를 막아요' },
     { key: 'noPwSaveAfterRemoteMin', page: 'set-security', group: '로그인 · 비밀번호', label: '원격 조작이 들어온 사이트는 비밀번호 저장 안 묻기', type: 'number', def: 30, min: 0, max: 1440, unit: '분', main: true, help: '0 이면 끔' },
     { key: 'clipboardWarn', page: 'set-security', group: '탐색', label: '사이트가 클립보드에 복사하면 경고', type: 'bool', def: true },

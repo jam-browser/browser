@@ -111,6 +111,35 @@ async function createAccount(X, name, pw) {
   if (raw.includes('alice') || raw.includes('S1te-Secret') || raw.includes('호스트')) throw new Error('plaintext in vault file');
   step(`vault file on disk has no plaintext (starts with ${JSON.stringify(raw.slice(0, 6))}, ${raw.length} bytes)`);
 
+  // 비밀번호 점검: 약함 · 재사용 (이 PC 안에서만 계산) + 유출 확인 (SHA-1 앞 5자리만 보냄)
+  await A.ev(`Promise.all([
+    jamVault.saveLogin({ origin: 'https://weak.example', username: 'kim', password: 'qwer1234!' }),
+    jamVault.saveLogin({ origin: 'https://a.example', username: 'kim', password: 'Reused-Pass-77x!' }),
+    jamVault.saveLogin({ origin: 'https://b.example', username: 'kim', password: 'Reused-Pass-77x!' }),
+  ])`);
+  const health = await A.ev(`jamVault.health()`);
+  const hv = Object.values(health);
+  if (JSON.stringify(health).includes('Reused-Pass') || JSON.stringify(health).includes('qwer1234')) throw new Error('password leaked to app screen');
+  if (hv.filter((h) => h.weak).length !== 1 || hv.filter((h) => h.reusedWith.length).length !== 2) throw new Error('health ' + JSON.stringify(health));
+  await A.ev(`${q('#account-btn')}.click(); 1`);
+  const bar = await until('health bar', () => A.ev(`!${q('#pw-health')}.hidden && ${q('#pw-health-text')}.textContent.includes('재사용') && ${q('#pw-health-text')}.textContent`));
+  const tags = await A.ev(`[...document.querySelectorAll('#login-list .pw-tag')].map(t => t.textContent)`);
+  await A.ev(`(() => { const c = ${q('#pw-health-only')}; c.checked = true; c.dispatchEvent(new Event('change')); return 1; })()`);
+  await sleep(300);
+  const onlyN = await A.ev(`document.querySelectorAll('#login-list .login-row').length`);
+  await A.ev(`(() => { const c = ${q('#pw-health-only')}; c.checked = false; c.dispatchEvent(new Event('change')); return 1; })()`);
+  if (onlyN !== 3) throw new Error('fix-only filter ' + onlyN);
+  step(`password health: "${bar}" · tags ${JSON.stringify([...new Set(tags)])} · "고칠 것만" shows ${onlyN} — no password sent to the app screen`);
+  const br = await A.ev(`jamVault.breachCheck().then(r => r, e => ({ error: String(e) }))`);
+  if (br.error) console.log(`  (breach check skipped: ${br.error})`);
+  else {
+    const h2 = await A.ev(`jamVault.health()`);
+    const weakId = Object.keys(h2).find((k) => h2[k].weak);
+    if (!(h2[weakId].breached > 0)) throw new Error('weak password not found in breach list ' + JSON.stringify(h2));
+    step(`breach check: ${br.checked} checked, ${br.found} found ("qwer1234!" seen ${h2[weakId].breached.toLocaleString()} times)`);
+  }
+  await A.ev(`${q('#vault-dialog')}.close(); 1`);
+
   // 4. 다시 로그인 페이지 → 🔑 를 진짜 클릭 → 채워짐
   await A.ev(`navigateTab(activeTab, '${SITE}/pwlogin?again=1'); 1`);
   await until('pw page 2', () => A.ev(`activeTab.url.includes('again=1') && !activeTab.loading`));

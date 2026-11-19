@@ -16,6 +16,8 @@ const httpsTried = new Map(); // webContentsId → { https, http, host }
 const httpOnlyHosts = new Set();
 const { setupVault } = require('./vault');
 const { setupJamFiles, SCHEME: JAMFILE } = require('./jamfiles');
+const { setupSiteGuard } = require('./siteguard');
+let siteGuard = null;
 
 // 같이 보는 파일: jamfile://<파일ID>/ (앱 준비 전에 등록해야 함)
 protocol.registerSchemesAsPrivileged([{ scheme: JAMFILE, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
@@ -249,6 +251,7 @@ ipcMain.handle('jam:host-start', async (_e, opts = {}) => {
 
 ipcMain.handle('jam:host-stop', async () => {
   if (relayTunnel) {
+    relayTunnel.setPresence(null); // 다른 기기에서 이어 보기 목록에서 지움
     relayTunnel.close();
     relayTunnel = null;
   }
@@ -261,6 +264,72 @@ ipcMain.handle('jam:host-stop', async () => {
     jamServer = null;
     await s.close();
   }
+});
+
+// ---------- 다른 기기에서 이어 보기 (같은 브라우저 계정) ----------
+// 호스트: 중계 서버에 무작위 ID + 암호문(초대 링크)을 맡김. 계정 키는 메인 프로세스 밖으로 나가지 않음
+const PRESENCE = require('../shared/presence');
+ipcMain.handle('resume:publish', (e, { link, title } = {}) => {
+  if (!fromApp(e) || !relayTunnel) return { ok: false, reason: relayTunnel ? 'forbidden' : 'no-relay' };
+  if (!link) {
+    relayTunnel.setPresence(null);
+    return { ok: true };
+  }
+  const p = vaultApi && vaultApi.presence();
+  if (!p || !prefs.resumePublish) return { ok: false, reason: p ? 'off' : 'locked' };
+  if (typeof link !== 'string' || !/^jamrs?:\/\/[^\s]{8,400}$/.test(link)) return { ok: false, reason: 'bad-link' };
+  const blob = PRESENCE.seal(p.key, { v: 1, link, title: String(title || '').slice(0, 120), device: os.hostname().slice(0, 40), at: Date.now() });
+  p.key.fill(0);
+  relayTunnel.setPresence({ id: p.id, blob });
+  return { ok: true };
+});
+// 다른 기기: 중계 서버마다 내 ID 로 찾아보고, 이 PC 에서 풀어 봄
+function getJson(url, timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    let u;
+    try {
+      u = new URL(url);
+    } catch {
+      return resolve({ status: 0 });
+    }
+    const mod = u.protocol === 'https:' ? require('https') : require('http');
+    const req = mod.get(u, { timeout: timeoutMs, headers: { Accept: 'application/json' } }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (d) => {
+        body += d;
+        if (body.length > 8192) req.destroy();
+      });
+      res.on('end', () => {
+        let json = null;
+        try {
+          json = JSON.parse(body);
+        } catch {}
+        resolve({ status: res.statusCode, json });
+      });
+    });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve({ status: 0 }));
+  });
+}
+ipcMain.handle('resume:find', async (e, { relayUrls } = {}) => {
+  if (!fromApp(e)) return { found: [] };
+  const p = vaultApi && vaultApi.presence();
+  if (!p) return { found: [], reason: 'locked' };
+  const urls = (Array.isArray(relayUrls) ? relayUrls : []).filter((u) => typeof u === 'string').slice(0, 8);
+  const found = [];
+  const unsupported = [];
+  await Promise.all(urls.map(async (relay) => {
+    const url = PRESENCE.lookupUrl(relay, p.id);
+    if (!url) return;
+    const r = await getJson(url);
+    if (r.status === 200 && r.json && typeof r.json.blob === 'string') {
+      const o = PRESENCE.open(p.key, r.json.blob);
+      if (o && typeof o.link === 'string' && /^jamrs?:\/\//.test(o.link)) found.push({ relay, link: o.link, title: o.title || '', device: o.device || '', at: Number(o.at) || 0 });
+    } else if (r.status === 200 && !r.json) unsupported.push(relay); // 예전 중계 서버 (1.0.4 이하)
+  }));
+  p.key.fill(0);
+  return { found, unsupported };
 });
 
 // ---------- 중계 서버 상태 확인 ----------
@@ -458,6 +527,7 @@ function applyPrefs(prev) {
     if (!prev || prev.updateCheckHours !== prefs.updateCheckHours || prev.updateAuto !== prefs.updateAuto) scheduleUpdateChecks();
   }
   if (jamFilesApi) jamFilesApi.setLimits(prefs);
+  if (siteGuard) siteGuard.applyPrefs();
   // 근처 알림: 끄거나 간격이 바뀌면 다시 시작
   if (beacon && (!prefs.nearbyAnnounce || (prev && prev.nearbyIntervalSec !== prefs.nearbyIntervalSec))) {
     beacon.close();
@@ -920,13 +990,19 @@ app.whenReady().then(() => {
     if (ok && consume) pendingCapture = null;
     return ok;
   };
+  // 사이트 보호: 추적기 · 광고 차단, 서드파티 쿠키, 사이트 권한(위치 · 알림 · 카메라 · 마이크 …)
+  siteGuard = setupSiteGuard({ app, ipcMain, net, webContents, getWindow: () => mainWindow, getPrefs: () => prefs, testMode: process.env.JAM_TEST_OFFSCREEN === '1' });
+  siteGuard.attach(ses);
+  siteGuard.applyPrefs();
   ses.setPermissionRequestHandler((wc, permission, callback, details) => {
     notifyClipboard(wc, permission);
-    callback(ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, details, true));
+    if (ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, details, true)) return callback(true);
+    siteGuard.requestPermission(wc, permission, details || {}, callback); // 사이트마다 묻고 기억 (그 밖의 권한은 거절)
   });
   ses.setPermissionCheckHandler((wc, permission, origin, details) => {
     notifyClipboard(wc, permission);
-    return ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, { securityOrigin: origin, ...details });
+    return ALLOWED_PERMISSIONS.has(permission) || mirrorCapture(wc, permission, { securityOrigin: origin, ...details }) ||
+      siteGuard.checkPermission(wc, permission, origin, details || {});
   });
   setupDownloads(ses);
   setupExtensions(ses);
@@ -935,10 +1011,17 @@ app.whenReady().then(() => {
   jamFilesApi = setupJamFiles({ ipcMain, dialog, getWindow: () => mainWindow, getSession: () => ses, appDir: path.join(__dirname, '..') });
   jamFilesApi.attach(ses);
   jamFilesApi.setLimits(prefs);
-  // 요청 검사는 하나로: jamfile:// 를 웹페이지가 불러오는 것 막기 + HTTPS 우선
-  ses.webRequest.onBeforeRequest({ urls: ['jamfile://*/*', 'http://*/*'] }, (d, cb) => {
+  // 요청 검사는 하나로 (세션마다 리스너가 하나뿐): jamfile:// 를 웹페이지가 불러오는 것 막기 + HTTPS 우선 + 추적기 · 광고 차단
+  ses.webRequest.onBeforeRequest({ urls: ['jamfile://*/*', 'http://*/*', 'https://*/*', 'ws://*/*', 'wss://*/*'] }, (d, cb) => {
     if (d.url.startsWith('jamfile:')) return cb({ cancel: jamFilesApi.blockedRequest(d) });
-    if (prefs.httpsFirst && d.resourceType === 'mainFrame' && d.method === 'GET') {
+    let blocked = null;
+    try {
+      blocked = siteGuard.onRequest(d);
+    } catch (e) {
+      console.error('차단 검사 오류:', e.message);
+    }
+    if (blocked) return cb(blocked);
+    if (prefs.httpsFirst && d.resourceType === 'mainFrame' && d.method === 'GET' && d.url.startsWith('http:')) {
       const up = httpsUpgrade(d.url);
       let host = '';
       try {
@@ -952,7 +1035,7 @@ app.whenReady().then(() => {
     }
     cb({});
   });
-  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched, getPrefs: () => prefs });
+  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched, getPrefs: () => prefs, fetch: (u, o) => net.fetch(u, o) });
   createWindow();
   startNearbyScanner();
   setupAutoUpdate();

@@ -32,7 +32,7 @@ function originOf(url) {
   }
 }
 
-function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow, remoteTouched = () => false, getPrefs = () => ({}) }) {
+function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow, remoteTouched = () => false, getPrefs = () => ({}), fetch: fetchImpl = globalThis.fetch }) {
   const SITE = require('../shared/site');
   const { domainToUnicode } = require('url');
   const warnedHosts = new Set();
@@ -228,9 +228,11 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
   });
 
   // 백업: Windows 계정 암호화를 뺀 금고 파일 (이중 암호화는 그대로). 다른 PC 에서는 비밀 키 + 비밀번호로 연다
+  // 테스트(화면 밖 실행)에서만: 파일 창 대신 정해 둔 경로 (JAM_TEST_DIALOG_FILE)
+  const testFile = () => (process.env.JAM_TEST_OFFSCREEN === '1' && process.env.JAM_TEST_DIALOG_FILE) || null;
   handle('vault:export', async () => {
     requireUnlocked();
-    const { canceled, filePath } = await dialog.showSaveDialog(getWindow(), {
+    const { canceled, filePath } = testFile() ? { canceled: false, filePath: testFile() } : await dialog.showSaveDialog(getWindow(), {
       title: '브라우저 계정 백업',
       defaultPath: 'jam-account-backup.jvault',
       filters: [{ name: 'Jam 계정 백업', extensions: ['jvault'] }],
@@ -242,7 +244,7 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
 
   handle('vault:import', async () => {
     if (fs.existsSync(FILE)) throw new Error('이미 이 PC 에 계정이 있어요');
-    const { canceled, filePaths } = await dialog.showOpenDialog(getWindow(), {
+    const { canceled, filePaths } = testFile() ? { canceled: false, filePaths: [testFile()] } : await dialog.showOpenDialog(getWindow(), {
       title: '브라우저 계정 백업 불러오기',
       filters: [{ name: 'Jam 계정 백업', extensions: ['jvault'] }],
       properties: ['openFile'],
@@ -339,6 +341,54 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     return l ? { ok: true, password: V.openField(session, l.id, l.pw) } : { ok: false };
   });
   handle('vault:generate', ({ length }) => V.generatePassword(length));
+
+  // ---------- 비밀번호 점검 ----------
+  // 약함 · 재사용은 이 PC 안에서만 계산 (앱 화면에는 결과만, 비밀번호는 안 감)
+  const HEALTH = require('../shared/password-health');
+  const breached = new Map(); // id → { count, tag } (비밀번호가 바뀌면 tag 가 달라져 무효)
+  const pwTag = (pw) => crypto.createHash('sha256').update(pw).digest('hex').slice(0, 16);
+  function openAll() {
+    return session.doc.logins.map((l) => ({ id: l.id, origin: l.origin, username: l.username, pw: l.pw ? V.openField(session, l.id, l.pw) : '' }));
+  }
+  handle('vault:health', () => {
+    requireUnlocked();
+    const all = openAll();
+    const r = HEALTH.review(all);
+    for (const l of all) {
+      const b = breached.get(l.id);
+      if (r[l.id]) r[l.id].breached = b && b.tag === pwTag(l.pw) ? b.count : null;
+      l.pw = '';
+    }
+    return r;
+  });
+  // 유출 확인 (사용자가 눌렀을 때만): Have I Been Pwned 에 SHA-1 앞 5자리만 보내고(k-익명성),
+  // 돌아온 목록에서 이 PC 가 직접 찾음. 비밀번호 · 아이디 · 사이트는 보내지 않음. 응답 크기도 섞음(Add-Padding)
+  handle('vault:breach-check', async () => {
+    requireUnlocked();
+    const all = openAll();
+    const byPrefix = new Map();
+    for (const l of all) {
+      if (!l.pw) continue;
+      const { prefix, suffix } = HEALTH.hibpPrefix(l.pw);
+      if (!byPrefix.has(prefix)) byPrefix.set(prefix, []);
+      byPrefix.get(prefix).push({ id: l.id, suffix, tag: pwTag(l.pw) });
+      l.pw = '';
+    }
+    let checked = 0;
+    let found = 0;
+    for (const [prefix, items] of byPrefix) {
+      const res = await fetchImpl(`https://api.pwnedpasswords.com/range/${prefix}`, { headers: { 'Add-Padding': 'true' } });
+      if (!res.ok) throw new Error(`유출 확인 서버 오류 (${res.status})`);
+      const body = await res.text();
+      for (const it of items) {
+        const count = HEALTH.hibpCount(body, it.suffix);
+        breached.set(it.id, { count, tag: it.tag });
+        checked++;
+        if (count) found++;
+      }
+    }
+    return { checked, found };
+  });
 
   // ---------- 신원 · 친구 ----------
   handle('identity:get', () => {
@@ -469,6 +519,12 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
       lastActivity = Date.now();
       return { pub, sig: ID.signPair(priv, th) };
     },
+    // 다른 기기에서 이어 보기: 계정 개인 키에서 만든 { id, key } (메인 프로세스 안에서만 씀). 잠겨 있으면 null
+    presence() {
+      if (!session) return null;
+      return require('../shared/presence').derive(session.doc.identity.priv);
+    },
+    selfFp: () => (session ? ID.fingerprint(session.doc.identity.pub) : null),
   };
 }
 

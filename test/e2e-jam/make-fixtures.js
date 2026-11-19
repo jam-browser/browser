@@ -102,4 +102,6 @@ function swf(r, g, b) {
   return Buffer.concat([head, body]);
 }
 fs.writeFileSync(path.join(out, 'game.swf'), swf(0, 160, 255));
+// 사이트 보호 E2E 용 차단 목록 (테스트 모드에서는 인터넷 목록 대신 이것)
+fs.writeFileSync(path.join(out, 'blocklist.txt'), ['/trk.js', '/trk.gif', ''].join('\n'));
 console.log('fixtures in', out);

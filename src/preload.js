@@ -29,6 +29,9 @@ contextBridge.exposeInMainWorld('jamApp', {
   fileHas: (fid) => ipcRenderer.invoke('file:has', fid),
   fileDrop: (fid) => ipcRenderer.invoke('file:drop', fid),
   stopHost: () => ipcRenderer.invoke('jam:host-stop'),
+  // 다른 기기에서 이어 보기 (같은 브라우저 계정): 맡기기 · 찾기 — 계정 키는 메인 프로세스에서만 씀
+  resumePublish: (arg) => ipcRenderer.invoke('resume:publish', arg || {}),
+  resumeFind: (arg) => ipcRenderer.invoke('resume:find', arg || {}),
   copy: (text) => ipcRenderer.invoke('clipboard:write', text),
   onOpenTab: (cb) => ipcRenderer.on('open-tab', (_e, url) => cb(url)),
   onShortcut: (cb) => ipcRenderer.on('shortcut', (_e, action) => cb(action)),
@@ -85,6 +88,8 @@ contextBridge.exposeInMainWorld('jamVault', {
   copyPassword: (id) => ipcRenderer.invoke('vault:login-copy', { id }),
   revealPassword: (id, password) => ipcRenderer.invoke('vault:login-reveal', { id, password }),
   generate: (length) => ipcRenderer.invoke('vault:generate', { length }),
+  health: () => ipcRenderer.invoke('vault:health'),
+  breachCheck: () => ipcRenderer.invoke('vault:breach-check'),
   identity: () => ipcRenderer.invoke('identity:get'),
   signJoin: (nonce, code) => ipcRenderer.invoke('identity:sign-join', { nonce, code }),
   friends: () => ipcRenderer.invoke('friends:list'),
@@ -95,4 +100,17 @@ contextBridge.exposeInMainWorld('jamVault', {
   onLocked: (cb) => ipcRenderer.on('vault:locked', (_e, info) => cb(info)),
   onOfferSave: (cb) => ipcRenderer.on('pw:offer-save', (_e, info) => cb(info)),
   onLookalike: (cb) => ipcRenderer.on('pw:lookalike', (_e, info) => cb(info)),
+});
+
+// 사이트 보호: 🛡 패널 · 사이트 권한 묻기 · 사이트 설정 목록
+contextBridge.exposeInMainWorld('jamSite', {
+  info: (wcId) => ipcRenderer.invoke('site:info', { wcId }),
+  set: (arg) => ipcRenderer.invoke('site:set', arg),
+  list: () => ipcRenderer.invoke('site:list'),
+  clearAll: () => ipcRenderer.invoke('site:clear-all'),
+  refreshLists: () => ipcRenderer.invoke('shield:refresh'),
+  answer: (id, decision) => ipcRenderer.send('perm:answer', { id, decision }),
+  onAsk: (cb) => ipcRenderer.on('perm:ask', (_e, info) => cb(info)),
+  onClosed: (cb) => ipcRenderer.on('perm:closed', (_e, info) => cb(info)),
+  onCount: (cb) => ipcRenderer.on('shield:count', (_e, info) => cb(info)),
 });

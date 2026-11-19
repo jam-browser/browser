@@ -32,11 +32,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     extActionsDefined: !!customElements.get('browser-action-list'),
     tabs: tabs.length,
     prefsPages: [...document.querySelectorAll('#settings-dialog .pref-page')].length,
+    prefsWant: JamPrefs.PAGES.length,
     pingBtn: !!document.getElementById('ov-ping'),
   })`);
   console.log(JSON.stringify(r));
   const want = require('../../package.json').version; // 지금 버전이 화면에 보이는지
-  const ok = r.version.includes(want) && r.extBar && r.extActionsDefined && r.tabs > 0 && r.prefsPages === 5 && r.pingBtn;
+  const ok = r.version.includes(want) && r.extBar && r.extActionsDefined && r.tabs > 0 && r.prefsPages === r.prefsWant && r.pingBtn;
   console.log(ok ? '\nE2E smoke OK' : '\nE2E smoke FAILED');
   process.exit(ok ? 0 : 1);
 })().catch((e) => {

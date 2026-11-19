@@ -24,10 +24,22 @@ function startRelayTunnel({ relayUrl, localPort, relayKey, log = () => {} }) {
     let attempts = 0;
     let settled = false;
     const conns = new Set();
+    let presence = null; // { id, blob } — 같은 계정의 다른 기기가 찾을 수 있게 맡긴 암호문 (다시 붙으면 다시 보냄)
+    const sendPresence = () => {
+      if (control && control.readyState === WebSocket.OPEN && route) {
+        control.send(JSON.stringify({ type: 'presence', id: presence ? presence.id : null, blob: presence ? presence.blob : null }));
+      }
+    };
 
     const api = {
       get route() {
         return route;
+      },
+      // 다른 기기에서 이어 보기: { id, blob } 또는 null (지우기). 옛 중계 서버는 그냥 무시함
+      setPresence(p) {
+        const had = !!presence;
+        presence = p && p.id && p.blob ? { id: String(p.id), blob: String(p.blob) } : null;
+        if (presence || had) sendPresence();
       },
       close() {
         closed = true;
@@ -105,6 +117,7 @@ function startRelayTunnel({ relayUrl, localPort, relayKey, log = () => {} }) {
           token = m.token;
           attempts = 0;
           log(`relay route ${route}`);
+          if (presence) sendPresence();
           if (!settled) {
             settled = true;
             resolve(api);

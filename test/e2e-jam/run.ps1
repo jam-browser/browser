@@ -5,7 +5,7 @@
 #   ... -Packaged        # use dist\win-unpacked\Jam Browser.exe (run `npx electron-builder --win --dir` first)
 #   ... -Relay <path to jam-relay.js>   # default: ..\jam-backend-build\jam-relay.js next to this repo, or $env:JAM_E2E_RELAY
 param(
-  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'smoke'),
+  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'smoke'),
   [switch]$Packaged,
   [string]$Relay = $env:JAM_E2E_RELAY
 )
@@ -17,7 +17,7 @@ $app = (Resolve-Path "$here\..\..").Path
 $P = @{ host = $(if ($env:JAM_E2E_HOST_PORT) { $env:JAM_E2E_HOST_PORT } else { 9301 }); guest = $(if ($env:JAM_E2E_GUEST_PORT) { $env:JAM_E2E_GUEST_PORT } else { 9302 }) }
 if (-not $Relay) { $cand = Join-Path (Split-Path $app -Parent) 'jam-backend-build\jam-relay.js'; if (Test-Path $cand) { $Relay = $cand } }
 # tests that go through a local relay, and the relay's per-guest limit for each
-$viaRelay = @{ 'nearby' = 0; 'mirror' = 0; 'files' = 0; 'relay-cap' = 0.5 }
+$viaRelay = @{ resume = 0; 'nearby' = 0; 'mirror' = 0; 'files' = 0; 'relay-cap' = 0.5 }
 $exe = if ($Packaged) { "$app\dist\win-unpacked\Jam Browser.exe" } else { "$app\node_modules\electron\dist\electron.exe" }
 if (-not (Test-Path $exe)) { Write-Host "App not found: $exe" -ForegroundColor Red; exit 2 }
 New-Item -ItemType Directory -Force "$here\out" | Out-Null
@@ -48,6 +48,8 @@ foreach ($t in $Tests) {
     if (-not (Wait-Http "http://127.0.0.1:$relayPort/version" 10)) { Write-Host '  relay did not start' -ForegroundColor Red }
   }
   $env:JAM_TEST_OFFSCREEN = '1'
+  $env:JAM_TEST_BLOCKLIST = "$here\fixtures\blocklist.txt"  # 추적기 차단: 인터넷 목록 대신 테스트 목록
+  $env:JAM_TEST_DIALOG_FILE = "$here\out\account-backup.jvault"  # 계정 백업 · 불러오기: 파일 창 대신 이 경로
   $flags = '--disable-features=CalculateNativeWinOcclusion', '--disable-backgrounding-occluded-windows', '--disable-renderer-backgrounding'
   # 인자는 꼭 배열로 (원소 하나짜리 배열은 PowerShell 이 문자열로 풀어서, 앱 경로와 다음 인자가 한 덩어리로 붙어 버림)
   [string[]]$pre = @()
@@ -56,7 +58,7 @@ foreach ($t in $Tests) {
   [string[]]$guestArgs = $pre + @("--remote-debugging-port=$($P.guest)", "--user-data-dir=`"$here\ud-guest`"") + $flags
   Start-Process -FilePath $exe -ArgumentList $hostArgs -RedirectStandardOutput "$here\host.log" -RedirectStandardError "$here\host.err" | Out-Null
   Start-Process -FilePath $exe -ArgumentList $guestArgs -RedirectStandardOutput "$here\guest.log" -RedirectStandardError "$here\guest.err" | Out-Null
-  Remove-Item Env:JAM_TEST_OFFSCREEN -ErrorAction SilentlyContinue
+  Remove-Item Env:JAM_TEST_OFFSCREEN -ErrorAction SilentlyContinue; Remove-Item Env:JAM_TEST_BLOCKLIST -ErrorAction SilentlyContinue
   if (-not ((Wait-Http "http://127.0.0.1:$($P.host)/json/list" 40) -and (Wait-Http "http://127.0.0.1:$($P.guest)/json/list" 40))) { Write-Host '  apps did not open their debug ports' -ForegroundColor Red; $results += "$t FAILED (start)"; Stop-Apps; continue }
   Start-Sleep -Seconds 3
   node $script $app $relayPort
