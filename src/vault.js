@@ -10,13 +10,18 @@
  * 원칙
  * - 금고를 푸는 키, 사이트 비밀번호, 신원 비밀 키는 메인 프로세스 밖으로 나가지 않는다
  *   (앱 화면에는 목록만, 비밀번호는 클립보드 복사·재인증 후 보기·해당 사이트 페이지에 직접 채우기로만)
- * - 아무것도 외부 서버로 보내지 않는다. Jam 상대에게는 친구 확인용 공개 키 + 서명만 (방 키로 암호화된 채)
+ * - 이 PC 계정: 아무것도 외부 서버로 보내지 않는다. Jam 상대에게는 친구 확인용 공개 키 + 서명만 (방 키로 암호화된 채)
+ * - 서버 계정(아이디 · 비밀번호): 중계 서버에 "암호화된 금고 파일" 과 "로그인 확인 값(auth)" 만 보낸다.
+ *   비밀번호 · 금고 열쇠 · 사이트 비밀번호 평문은 보내지 않음 → 서버(운영자)도 내용을 볼 수 없음.
+ *   다른 기기에서 같은 아이디로 로그인하면 금고를 받아서 이 PC 에서 풀고, 바뀐 것은 항목마다 합쳐서 서로 올림
  */
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const V = require('./vault-crypto');
 const ID = require('../shared/identity');
+const API = require('./account-api');
+const { mergeDocs } = require('../shared/vault-merge');
 
 const DPAPI_MAGIC = 'JVDP1\n';
 const CAPTURE_TTL = 2 * 60e3;
@@ -115,12 +120,14 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
   const requireUnlocked = () => {
     if (!session) throw new Error('locked');
   };
-  function persist() {
+  function persist({ push = true } = {}) {
     file = V.saveVault(session, file);
     writeVaultFile(file);
+    if (push && acct) schedulePush();
   }
   function lock(reason) {
     if (!session) return;
+    stopSync();
     V.wipeSession(session);
     session = null;
     for (const c of captures.values()) c.password = '';
@@ -128,6 +135,11 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     send('vault:locked', { reason });
   }
   async function verifyMaster(password) {
+    if (file && file.account) {
+      const r = await V.unlockAccountVault(file, password, file.account.id); // 틀리면 throw
+      r.auth.fill(0);
+      return V.wipeSession(r.session);
+    }
     const sk = readSecretKey();
     if (!sk) throw new Error('need-secret-key');
     const check = await V.unlockVault(file, password, sk); // 틀리면 throw
@@ -140,25 +152,267 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
       unlocked: !!session,
       name: session ? session.doc.profile.name : null,
       hasSecretKeyHere: !!readSecretKey(),
+      account: accountMeta(), // 서버 계정이면 { server, id }
+      sync: syncState,
       autoLockMinutes: session ? session.doc.settings.autoLockMinutes : null,
       dpapi: dpapi(),
       waitMs: Math.max(0, (a.nextAt || 0) - Date.now()),
     };
   }
 
+  // ---------- 서버 계정 (중계 서버) · 동기화 ----------
+  let acct = null; // 풀린 동안만: { api, id, server, auth(Buffer), token, rev }
+  let syncState = { state: 'off' };
+  let pushTimer = null;
+  let pullTimer = null;
+  let syncing = Promise.resolve();
+  function accountMeta() {
+    try {
+      const f = file || readVaultFile();
+      return f && f.account ? { server: f.account.server, id: f.account.id } : null;
+    } catch {
+      return null;
+    }
+  }
+  const uploadable = (f) => {
+    const { account, ...v } = f;
+    return v;
+  };
+  function setSync(state, extra = {}) {
+    syncState = { state, at: Date.now(), ...extra };
+    send('vault:sync', syncState);
+  }
+  function startSync(a) {
+    acct = a;
+    clearInterval(pullTimer);
+    pullTimer = setInterval(() => queueSync(pull), 60e3);
+    queueSync(acct.token ? pull : loginAndMerge);
+  }
+  function stopSync() {
+    clearTimeout(pushTimer);
+    clearInterval(pullTimer);
+    pushTimer = pullTimer = null;
+    if (acct) {
+      if (acct.token) acct.api.logout(acct.token);
+      acct.auth.fill(0);
+    }
+    acct = null;
+    syncState = { state: 'off' };
+  }
+  // 동기화 작업은 하나씩 차례로
+  const queueSync = (fn) => (syncing = syncing.then(() => (acct && session ? fn() : null)).catch((e) => syncError(e)));
+  function syncError(e) {
+    if (!acct) return;
+    if (e && e.code === 'bad-login') {
+      // 다른 기기에서 비밀번호를 바꿨음 → 새 비밀번호로 다시 로그인해야 함
+      setSync('relogin', { message: '다른 기기에서 계정 비밀번호가 바뀌었어요. 잠근 뒤 새 비밀번호로 다시 열어 주세요' });
+      clearInterval(pullTimer);
+      return;
+    }
+    setSync(e && e.code === 'offline' ? 'offline' : 'error', { message: (e && e.message) || String(e) });
+  }
+  async function withToken(fn) {
+    if (!acct.token) await loginAndMerge();
+    try {
+      return await fn(acct.token);
+    } catch (e) {
+      if (e.code !== 'bad-token') throw e;
+      acct.token = null; // 서버가 다시 켜졌거나 만료 → 다시 로그인
+      await loginAndMerge();
+      return fn(acct.token);
+    }
+  }
+  async function loginAndMerge() {
+    setSync('syncing');
+    const r = await acct.api.login(acct.id, acct.auth);
+    acct.token = r.token;
+    await applyRemote(r.vault, r.rev);
+  }
+  async function pull() {
+    setSync('syncing');
+    const r = await withToken((t) => acct.api.getVault(t, acct.rev));
+    if (r) await applyRemote(r.vault, r.rev);
+    else setSync('ok');
+  }
+  // 서버 사본을 이 기기 것과 합치고, 서버가 뒤처졌으면 올림
+  async function applyRemote(remote, rev) {
+    if (!session || !acct) return;
+    let remoteDoc;
+    try {
+      remoteDoc = V.openDocWith(session, remote);
+    } catch {
+      throw new Error('서버의 계정 데이터를 풀 수 없어요 (다른 계정의 데이터?)');
+    }
+    const m = mergeDocs(session.doc, remoteDoc);
+    if (m.localChanged) {
+      session.doc = m.doc;
+      send('vault:changed', { sync: session.doc.sync || {} });
+    }
+    // 다른 기기에서 비밀번호를 바꿨으면 금고 열쇠 포장(kdf · dek)은 서버 것을 씀
+    if (remote.kdf && remote.dek && (remote.kdf.salt !== file.kdf.salt || JSON.stringify(remote.dek) !== JSON.stringify(file.dek))) {
+      file = { ...file, kdf: remote.kdf, dek: remote.dek };
+    }
+    acct.rev = rev;
+    file = { ...V.saveVault(session, file), account: { ...file.account, rev } };
+    writeVaultFile(file);
+    if (m.remoteBehind) await push();
+    else setSync('ok');
+  }
+  async function push() {
+    setSync('syncing');
+    try {
+      const r = await withToken((t) => acct.api.putVault(t, acct.rev, uploadable(file)));
+      acct.rev = r.rev;
+      file = { ...file, account: { ...file.account, rev: r.rev } };
+      writeVaultFile(file);
+      setSync('ok');
+    } catch (e) {
+      if (e.code === 'conflict' && e.body && e.body.vault) return applyRemote(e.body.vault, e.body.rev); // 합쳐서 다시
+      throw e;
+    }
+  }
+  // 이 PC 의 금고가 옛 비밀번호로 감싸져 있을 때: 새 비밀번호로 서버에 로그인해서 받은 금고로 바꾸고, 이 PC 문서는 합침
+  async function serverRelogin(local, password) {
+    const api = API.client(local.account.server);
+    const id = local.account.id;
+    const kdf = await api.prelogin(id);
+    const auth = await V.accountAuth(password, kdf, id);
+    let res;
+    try {
+      res = await api.login(id, auth);
+    } finally {
+      auth.fill(0);
+    }
+    const u = await V.unlockAccountVault(res.vault, password, id);
+    try {
+      u.session.doc = mergeDocs(V.openDocWith(u.session, local), u.session.doc).doc;
+    } catch {}
+    file = { ...V.saveVault(u.session, res.vault), account: { ...local.account, rev: res.rev } };
+    writeVaultFile(file);
+    return { r: u, token: res.token };
+  }
+  function schedulePush() {
+    clearTimeout(pushTimer);
+    pushTimer = setTimeout(() => queueSync(push), 1500);
+  }
+  const newDoc = (name) => ({
+    profile: { name: clean(name, 24) || '나', createdAt: Date.now(), updatedAt: Date.now() },
+    identity: ID.newIdentity(),
+    friends: [],
+    logins: [],
+    settings: { autoLockMinutes: 10 },
+    tomb: {},
+    sync: {},
+  });
+  function checkServerInput(server, id) {
+    const base = API.serverBase(server);
+    if (!base) throw new Error('중계 서버 주소가 올바르지 않아요 (예: relay.example.com:3031)');
+    const nid = V.normId(id);
+    if (!API.ID_RE.test(nid)) throw new Error('아이디는 영어 소문자 · 숫자 · . _ - 로 3~32자예요 (첫 글자는 영어나 숫자)');
+    return { base, nid };
+  }
+
+  // 새 서버 계정 만들기
+  handle('vault:server-create', async ({ server, id, name, password, invite }) => {
+    if (fs.existsSync(FILE)) throw new Error('이미 이 PC 에 계정이 있어요');
+    const { base, nid } = checkServerInput(server, id);
+    const api = API.client(base);
+    const r = await V.createAccountVault({ id: nid, password, doc: newDoc(name) });
+    let reg;
+    try {
+      reg = await api.register(nid, r.auth, r.file, String(invite || '').trim());
+    } catch (e) {
+      V.wipeSession(r.session);
+      r.auth.fill(0);
+      throw e;
+    }
+    file = { ...r.file, account: { server: base, id: nid, rev: reg.rev } };
+    session = r.session;
+    writeVaultFile(file);
+    resetAttempts();
+    lastActivity = Date.now();
+    startSync({ api, id: nid, server: base, auth: r.auth, token: reg.token, rev: reg.rev });
+    return { ok: true, name: session.doc.profile.name, insecure: API.insecureInternet(base) };
+  });
+
+  // 다른 기기에서 만든 서버 계정으로 로그인 (이 PC 에는 아직 계정이 없을 때)
+  handle('vault:server-login', async ({ server, id, password }) => {
+    if (fs.existsSync(FILE)) throw new Error('이미 이 PC 에 계정이 있어요');
+    const { base, nid } = checkServerInput(server, id);
+    const api = API.client(base);
+    const kdf = await api.prelogin(nid);
+    const auth = await V.accountAuth(String(password || ''), kdf, nid);
+    let r;
+    try {
+      r = await api.login(nid, auth);
+    } finally {
+      auth.fill(0);
+    }
+    const u = await V.unlockAccountVault(r.vault, String(password || ''), nid);
+    file = { ...r.vault, account: { server: base, id: nid, rev: r.rev } };
+    session = u.session;
+    writeVaultFile(file);
+    resetAttempts();
+    lastActivity = Date.now();
+    startSync({ api, id: nid, server: base, auth: u.auth, token: r.token, rev: r.rev });
+    return { ok: true, name: session.doc.profile.name, insecure: API.insecureInternet(base) };
+  });
+
+  // 이 PC 계정을 서버 계정으로 올리기 (계정 비밀번호를 확인한 뒤, 그 비밀번호로 서버 계정을 만듦)
+  handle('vault:server-upload', async ({ server, id, password, invite }) => {
+    requireUnlocked();
+    if (file.account) throw new Error('이미 서버 계정이에요');
+    const { base, nid } = checkServerInput(server, id);
+    try {
+      await verifyMaster(String(password || ''));
+    } catch {
+      return { ok: false, error: 'wrong', waitMs: registerFail() };
+    }
+    resetAttempts();
+    const api = API.client(base);
+    if (!session.doc.tomb) session.doc.tomb = {};
+    if (!session.doc.sync) session.doc.sync = {};
+    const r = await V.rewrapForAccount(session, file, { id: nid, password: String(password) });
+    let reg;
+    try {
+      reg = await api.register(nid, r.auth, r.file, String(invite || '').trim());
+    } catch (e) {
+      r.auth.fill(0);
+      throw e;
+    }
+    file = { ...r.file, account: { server: base, id: nid, rev: reg.rev } };
+    writeVaultFile(file);
+    fs.rmSync(SK_FILE, { force: true }); // 서버 계정은 비밀 키를 쓰지 않음
+    startSync({ api, id: nid, server: base, auth: r.auth, token: reg.token, rev: reg.rev });
+    return { ok: true, insecure: API.insecureInternet(base) };
+  });
+
+  handle('vault:sync-now', () => {
+    requireUnlocked();
+    if (!acct) return syncState;
+    return queueSync(pull).then(() => syncState);
+  });
+  // 동기화할 앱 데이터 (북마크 · 설정 등): 계정 문서 안에 암호화돼서 같이 다님
+  handle('vault:sync-get', () => (session ? session.doc.sync || {} : null));
+  handle('vault:sync-put', ({ key, value }) => {
+    requireUnlocked();
+    if (!/^[a-z][a-zA-Z0-9-]{1,31}$/.test(String(key))) throw new Error('bad key');
+    const text = JSON.stringify(value === undefined ? null : value);
+    if (text.length > 2 * 1024 * 1024) throw new Error('너무 커요');
+    if (!session.doc.sync) session.doc.sync = {};
+    const cur = session.doc.sync[key];
+    if (cur && JSON.stringify(cur.v) === text) return true;
+    session.doc.sync[key] = { v: JSON.parse(text), at: Date.now() };
+    persist();
+    return true;
+  });
+
   // ---------- 계정 ----------
   handle('vault:status', () => status());
 
   handle('vault:create', async ({ name, password }) => {
     if (fs.existsSync(FILE)) throw new Error('이미 이 PC 에 계정이 있어요');
-    const doc = {
-      profile: { name: clean(name, 24) || '나', createdAt: Date.now() },
-      identity: ID.newIdentity(),
-      friends: [],
-      logins: [],
-      settings: { autoLockMinutes: 10 },
-    };
-    const r = await V.createVault({ password, doc });
+    const r = await V.createVault({ password, doc: newDoc(name) });
     file = r.file;
     session = r.session;
     writeVaultFile(file);
@@ -175,6 +429,25 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     if (wait > 0) return { ok: false, error: 'wait', waitMs: wait };
     file = readVaultFile();
     if (!file) return { ok: false, error: 'no-vault' };
+    if (file.account) {
+      let r;
+      let token = null;
+      try {
+        r = await V.unlockAccountVault(file, String(password || ''), file.account.id);
+      } catch (e) {
+        if (e.code !== 'auth') throw e;
+        // 다른 기기에서 비밀번호를 바꿨을 수 있음 → 이 비밀번호로 서버에 로그인해서 새 금고를 받아 봄 (이 PC 데이터는 합침)
+        const fresh = await serverRelogin(file, String(password || '')).catch(() => null);
+        if (!fresh) return { ok: false, error: 'wrong', waitMs: registerFail() };
+        ({ r, token } = fresh);
+      }
+      session = r.session;
+      resetAttempts();
+      lastActivity = Date.now();
+      startSync({ api: API.client(file.account.server), id: file.account.id, server: file.account.server, auth: r.auth, token, rev: file.account.rev || 0 });
+      if (token) schedulePush(); // 이 PC 에만 있던 변경을 합친 것 올리기
+      return { ok: true, name: session.doc.profile.name };
+    }
     const typed = secretKey ? V.parseSecretKey(secretKey) : null;
     if (secretKey && !typed) return { ok: false, error: 'bad-secret-key' };
     const sk = typed || readSecretKey();
@@ -203,6 +476,19 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     } catch {
       return { ok: false, error: 'wrong' };
     }
+    if (file.account) {
+      if (!acct) throw new Error('서버 계정 연결이 없어요');
+      const r = await V.rewrapForAccount(session, file, { id: file.account.id, password: newPassword });
+      // 서버에 먼저 (실패하면 이 PC 도 그대로)
+      const res = await withToken((t) => acct.api.password(t, acct.auth, r.auth, acct.rev, uploadable(r.file)));
+      acct.auth.fill(0);
+      acct.auth = r.auth;
+      acct.rev = res.rev;
+      file = { ...r.file, account: { ...file.account, rev: res.rev } };
+      writeVaultFile(file);
+      setSync('ok');
+      return { ok: true };
+    }
     file = await V.changePassword(session, file, newPassword, readSecretKey());
     writeVaultFile(file);
     return { ok: true };
@@ -223,6 +509,7 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
   handle('vault:settings', ({ autoLockMinutes }) => {
     requireUnlocked();
     session.doc.settings.autoLockMinutes = Math.min(240, Math.max(1, Math.round(Number(autoLockMinutes) || 10)));
+    session.doc.settings.updatedAt = Date.now();
     persist();
     return session.doc.settings;
   });
@@ -258,9 +545,11 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
   });
 
   handle('vault:delete-account', async () => {
-    const { response } = await dialog.showMessageBox(getWindow(), {
+    const server = file && file.account;
+    const { response, checkboxChecked } = await dialog.showMessageBox(getWindow(), {
       type: 'warning',
       message: '이 PC 의 브라우저 계정을 삭제할까요?',
+      ...(server ? { checkboxLabel: `중계 서버(${server.server.replace(/^https?:\/\//, '')})에서도 계정 "${server.id}" 를 지우기 — 다른 기기에서도 더 이상 로그인할 수 없어요`, checkboxChecked: false } : {}),
       detail: '저장한 비밀번호, 친구 목록, 내 신원 키가 모두 지워지고 되돌릴 수 없어요. 백업 파일이 있으면 나중에 불러올 수 있어요.\n\n안전을 위해 웹사이트 로그인 상태(쿠키 · 사이트 저장소)도 함께 지워져요. 계정 비밀번호를 모르는 사람이 계정을 지우고 내 사이트 로그인을 쓰지 못하게 하기 위해서예요.',
       buttons: ['삭제', '취소'],
       defaultId: 1,
@@ -268,6 +557,11 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
       noLink: true,
     });
     if (response !== 0) return false;
+    if (server && checkboxChecked) {
+      if (!acct) throw new Error('잠금을 푼 상태에서만 서버 계정을 지울 수 있어요');
+      await withToken((t) => acct.api.remove(t, acct.auth)); // 실패하면 이 PC 계정도 그대로
+      acct.token = null;
+    }
     lock('deleted');
     for (const f of [FILE, SK_FILE, ATTEMPTS_FILE]) fs.rmSync(f, { force: true });
     file = null;
@@ -307,9 +601,15 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     requireUnlocked();
     return upsertLogin(arg);
   });
+  // 지운 것 기록 (서버 계정: 다른 기기에서 되살아나지 않게)
+  const bury = (key) => {
+    if (!session.doc.tomb) session.doc.tomb = {};
+    session.doc.tomb[key] = Date.now();
+  };
   handle('vault:login-delete', ({ id }) => {
     requireUnlocked();
     session.doc.logins = session.doc.logins.filter((l) => l.id !== id);
+    bury(`l:${id}`);
     persist();
     return true;
   });
@@ -413,14 +713,16 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     if (p.pub === session.doc.identity.pub) throw new Error('내 친구 코드예요');
     const nm = clean(name, 24) || p.name || '친구';
     const existing = session.doc.friends.find((f) => f.fp === p.fp);
-    if (existing) existing.name = nm;
-    else session.doc.friends.push({ fp: p.fp, pub: p.pub, name: nm, addedAt: Date.now() });
+    if (existing) Object.assign(existing, { name: nm, updatedAt: Date.now() });
+    else session.doc.friends.push({ fp: p.fp, pub: p.pub, name: nm, addedAt: Date.now(), updatedAt: Date.now() });
+    if (session.doc.tomb) delete session.doc.tomb[`f:${p.fp}`];
     persist();
     return { fp: p.fp, name: nm };
   });
   handle('friends:remove', ({ fp }) => {
     requireUnlocked();
     session.doc.friends = session.doc.friends.filter((f) => f.fp !== fp);
+    bury(`f:${fp}`);
     persist();
     return true;
   });

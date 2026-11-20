@@ -63,7 +63,7 @@ const account = (() => {
   function showStep(id) {
     $('#lock-screen').hidden = !id;
     for (const s of document.querySelectorAll('.ls-step')) s.hidden = s.id !== id;
-    const focus = { 'ls-create': '#ls-name', 'ls-unlock': '#ls-unlock-pw' }[id];
+    const focus = { 'ls-create': '#ls-name', 'ls-unlock': '#ls-unlock-pw', 'ls-login': '#ls-id', 'ls-signup': '#ls-su-id' }[id];
     if (focus) setTimeout(() => $(focus).focus(), 30);
   }
   function finishGate() {
@@ -76,7 +76,10 @@ const account = (() => {
   function showUnlock(reasonText = '') {
     $('#ls-unlock-title').textContent = state.name ? `${state.name}님, 잠금 해제` : '잠금 해제';
     $('#ls-unlock-reason').textContent = reasonText;
-    $('#ls-sk-row').hidden = state.hasSecretKeyHere;
+    // 서버 계정: 아이디 @ 서버, 비밀 키 없음
+    $('#ls-unlock-acct').hidden = !state.account;
+    $('#ls-unlock-acct').textContent = state.account ? `🌐 ${state.account.id} @ ${prettyServer(state.account.server)}` : '';
+    $('#ls-sk-row').hidden = !!state.account || state.hasSecretKeyHere;
     $('#ls-unlock-pw').value = '';
     $('#ls-unlock-sk').value = '';
     $('#ls-unlock-msg').textContent = state.waitMs > 0 ? `여러 번 틀려서 ${secs(state.waitMs)}초 뒤에 다시 시도할 수 있어요` : '';
@@ -97,6 +100,125 @@ const account = (() => {
       else showStep('ls-welcome');
     });
   }
+
+  // ---------- 서버 계정: 로그인 · 가입 ----------
+  const prettyServer = (u) => String(u || '').replace(/^https?:\/\//, '').replace(/^wss?:\/\//, '');
+  // 기본 서버 주소: 마지막에 쓴 계정 서버 → Jam 의 중계 서버 목록 첫 줄
+  function defaultServer() {
+    try {
+      const last = localStorage.getItem('jam-account-server');
+      if (last) return last;
+    } catch {}
+    const first = ($('#server-url')?.value || '').split(/[\s,]+/).find(Boolean);
+    return first || '';
+  }
+  // 인터넷 주소를 암호화 없이(http) 쓰면 알림 (같은 네트워크 · 내 PC 는 괜찮음)
+  function insecureNote(addr) {
+    const a = String(addr || '').trim();
+    if (!a || /^(wss|https):\/\//i.test(a)) return '';
+    const host = a.replace(/^(wss?|https?):\/\//i, '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+    const local = /^(localhost|127\.|10\.|192\.168\.|169\.254\.|::1$|f[cd])/i.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host) || /\.(local|localhost)$/.test(host);
+    return local ? '' : '⚠️ 암호화 안 된 주소예요. 데이터는 이미 암호화돼 있지만, 인터넷에서는 wss:// (TLS) 주소를 권해요';
+  }
+  function rememberServer(addr) {
+    try {
+      localStorage.setItem('jam-account-server', addr);
+    } catch {}
+    // Jam 중계 서버 목록이 비어 있으면 같은 서버를 넣어 둠
+    const box = $('#server-url');
+    if (box && !box.value.trim()) {
+      box.value = addr;
+      try {
+        localStorage.setItem('jam-server', addr);
+      } catch {}
+    }
+  }
+  function openLogin() {
+    $('#ls-srv').value = $('#ls-srv').value || defaultServer();
+    $('#ls-login-msg').textContent = '';
+    $('#ls-login-warn').textContent = insecureNote($('#ls-srv').value);
+    showStep('ls-login');
+  }
+  function openSignup() {
+    $('#ls-su-srv').value = $('#ls-su-srv').value || $('#ls-srv').value || defaultServer();
+    if (!$('#ls-su-id').value) $('#ls-su-id').value = $('#ls-id').value;
+    $('#ls-su-msg').textContent = '';
+    $('#ls-su-warn').textContent = insecureNote($('#ls-su-srv').value);
+    showStep('ls-signup');
+  }
+  $('#ls-go-login').addEventListener('click', openLogin);
+  $('#ls-go-signup').addEventListener('click', openSignup);
+  $('#ls-login-to-signup').addEventListener('click', openSignup);
+  $('#ls-srv').addEventListener('input', () => ($('#ls-login-warn').textContent = insecureNote($('#ls-srv').value)));
+  $('#ls-su-srv').addEventListener('input', () => ($('#ls-su-warn').textContent = insecureNote($('#ls-su-srv').value)));
+  $('#ls-su-pw').addEventListener('input', () => {
+    const pw = $('#ls-su-pw').value;
+    const st = strength(pw);
+    Object.assign($('#ls-su-meter-bar').style, { width: pw ? `${Math.min(100, (st.bits / 90) * 100)}%` : '0', background: st.color });
+    $('#ls-su-meter-text').textContent = pw ? `${st.text}${pw.length < 10 ? ' · 10자 이상 필요' : ''}` : '';
+  });
+  async function serverDone(r, server, verb) {
+    try {
+      localStorage.removeItem('jam-account-skip');
+    } catch {}
+    rememberServer(server);
+    await refresh();
+    finishGate();
+    toast(`${state.name}님, ${verb} 🔐 비밀번호 뱅크 · 친구 · 북마크 · 설정이 이 아이디로 동기화돼요`);
+    if (r.insecure) toast('⚠️ 암호화 안 된 중계 서버 주소(ws://)예요. 인터넷에서는 wss:// 를 쓰는 게 안전해요');
+  }
+  $('#ls-login').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = $('#ls-login-msg');
+    const server = $('#ls-srv').value.trim();
+    const id = $('#ls-id').value.trim().toLowerCase();
+    const pw = $('#ls-login-pw').value;
+    if (!server) return (msg.textContent = '중계 서버 주소를 입력하세요');
+    if (!id || !pw) return (msg.textContent = '아이디와 비밀번호를 입력하세요');
+    const btn = $('#ls-login-btn');
+    btn.disabled = true;
+    btn.textContent = '로그인 중… (암호화 열쇠 만드는 중)';
+    msg.textContent = '';
+    try {
+      const r = await jamVault.serverLogin({ server, id, password: pw });
+      $('#ls-login-pw').value = '';
+      await serverDone(r, server, '로그인했어요');
+    } catch (err) {
+      msg.textContent = errText(err);
+      $('#ls-login-pw').select();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '로그인';
+    }
+  });
+  $('#ls-signup').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = $('#ls-su-msg');
+    const server = $('#ls-su-srv').value.trim();
+    const id = $('#ls-su-id').value.trim().toLowerCase();
+    const name = $('#ls-su-name').value.trim();
+    const pw = $('#ls-su-pw').value;
+    if (!server) return (msg.textContent = '중계 서버 주소를 입력하세요');
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(id)) return (msg.textContent = '아이디는 영어 소문자 · 숫자 · . _ - 로 3~32자예요 (첫 글자는 영어나 숫자)');
+    if (!name) return (msg.textContent = '이름을 입력하세요');
+    if (pw.length < 10) return (msg.textContent = '비밀번호는 10자 이상이어야 해요');
+    if (strength(pw).level < 1) return (msg.textContent = '너무 쉬운 비밀번호예요. 더 길게, 여러 종류의 글자를 섞어 주세요');
+    if (pw !== $('#ls-su-pw2').value) return (msg.textContent = '비밀번호 확인이 달라요');
+    const btn = $('#ls-su-btn');
+    btn.disabled = true;
+    btn.textContent = '만드는 중… (암호화 열쇠 만드는 중)';
+    msg.textContent = '';
+    try {
+      const r = await jamVault.serverCreate({ server, id, name, password: pw, invite: $('#ls-su-invite').value.trim() });
+      $('#ls-su-pw').value = $('#ls-su-pw2').value = '';
+      await serverDone(r, server, '계정을 만들었어요');
+    } catch (err) {
+      msg.textContent = errText(err);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '만들기';
+    }
+  });
 
   $('#ls-go-create').addEventListener('click', () => {
     $('#ls-create-msg').textContent = '';
@@ -192,7 +314,7 @@ const account = (() => {
       } else {
         msg.textContent = r.waitMs > 0
           ? `비밀번호가 틀렸어요. ${secs(r.waitMs)}초 뒤에 다시 시도할 수 있어요`
-          : `비밀번호${$('#ls-sk-row').hidden ? '' : ' 또는 비밀 키'}가 틀렸어요`;
+          : `비밀번호${$('#ls-sk-row').hidden ? '' : ' 또는 비밀 키'}가 틀렸어요${state.account ? ' (다른 기기에서 바꿨다면 새 비밀번호로 — 서버에서 확인해요)' : ''}`;
       }
       $('#ls-unlock-pw').select();
     } catch (err) {
@@ -505,11 +627,68 @@ const account = (() => {
   });
 
   // ---------- 계정 · 보안 ----------
+  const SYNC_TEXT = { ok: '✓ 동기화됨', syncing: '동기화 중…', offline: '서버에 연결할 수 없어요 (다시 연결되면 이어서 해요)', error: '동기화 오류', relogin: '다시 로그인 필요', off: '' };
+  function renderSync(sync) {
+    const st = sync || state.sync || { state: 'off' };
+    const el2 = $('#acc-sync-state');
+    if (!el2) return;
+    const when = st.at ? ` · ${new Date(st.at).toLocaleTimeString()}` : '';
+    el2.textContent = `${SYNC_TEXT[st.state] || st.state}${st.message && st.state !== 'ok' ? ` — ${st.message}` : ''}${st.state === 'ok' ? when : ''}`;
+    el2.classList.toggle('err', ['error', 'relogin'].includes(st.state));
+  }
   async function renderAccount() {
     await refresh();
     $('#acc-name').textContent = state.name || '';
     $('#acc-autolock').value = state.autoLockMinutes || 10;
+    const a = state.account;
+    $('#acc-server-on').hidden = !a;
+    $('#acc-upload').hidden = !!a;
+    if (a) {
+      $('#acc-server-who').textContent = `🌐 ${a.id} @ ${prettyServer(a.server)}`;
+      renderSync();
+    } else {
+      $('#acc-up-srv').value = $('#acc-up-srv').value || defaultServer();
+    }
   }
+  $('#acc-sync-now').addEventListener('click', async () => {
+    renderSync({ state: 'syncing' });
+    try {
+      renderSync(await jamVault.syncNow());
+    } catch (e) {
+      renderSync({ state: 'error', message: errText(e) });
+    }
+  });
+  jamVault.onSync((st) => {
+    state.sync = st;
+    renderSync(st);
+    if (st.state === 'relogin') toast('🌐 ' + st.message);
+  });
+  // 다른 기기에서 바뀐 것을 받으면 목록 다시 그리기
+  jamVault.onChanged(() => {
+    if ($('#vault-dialog').open) {
+      renderLogins();
+      renderFriends();
+    }
+    refresh();
+  });
+  $('#acc-upload').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const server = $('#acc-up-srv').value.trim();
+    const id = $('#acc-up-id').value.trim().toLowerCase();
+    const pw = $('#acc-up-pw').value;
+    if (!server || !id || !pw) return toast('서버 주소 · 아이디 · 지금 계정 비밀번호를 입력하세요');
+    try {
+      const r = await jamVault.serverUpload({ server, id, password: pw, invite: $('#acc-up-invite').value.trim() });
+      if (!r.ok) return toast(r.waitMs > 0 ? `계정 비밀번호가 틀렸어요 (${secs(r.waitMs)}초 뒤 다시)` : '계정 비밀번호가 틀렸어요');
+      $('#acc-up-pw').value = '';
+      rememberServer(server);
+      toast(`🌐 서버 계정 "${id}" 로 올렸어요. 다른 기기에서 이 아이디 · 비밀번호로 로그인하세요`);
+      if (r.insecure) toast('⚠️ 암호화 안 된 중계 서버 주소(ws://)예요. 인터넷에서는 wss:// 를 쓰는 게 안전해요');
+      renderAccount();
+    } catch (err) {
+      toast(errText(err));
+    }
+  });
   $('#acc-autolock-save').addEventListener('click', async () => {
     try {
       const s = await jamVault.setAutoLock(Number($('#acc-autolock').value));
@@ -594,6 +773,7 @@ const account = (() => {
     refresh,
     isUnlocked: () => state.unlocked,
     selfFp: () => (state.unlocked ? selfFp : null),
+    server: () => (state.account ? state.account.server : null), // 서버 계정이면 서버 주소
     friendFps: () => (state.unlocked ? friendsCache.map((f) => f.fp) : []),
     friendName: (fp) => friendsCache.find((f) => f.fp === fp)?.name || null,
     fpPretty,
