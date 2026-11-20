@@ -217,6 +217,9 @@ async function unlockVault(file, password, secretKey) {
   if (!Buffer.isBuffer(secretKey) || secretKey.length !== SECRET_KEY_BYTES) throw new VaultError('secret-key', '비밀 키가 필요해요');
   const kdf = { alg: file.kdf.alg, N: file.kdf.N, r: file.kdf.r, p: file.kdf.p };
   const mk = await deriveMasterKeys(password, Buffer.from(file.kdf.salt, 'base64'), secretKey, kdf);
+  return openWithMasterKeys(file, mk);
+}
+function openWithMasterKeys(file, mk) {
   let dek;
   try {
     dek = open2(mk, file.dek, 'dek');
@@ -228,6 +231,70 @@ async function unlockVault(file, password, secretKey) {
   const dataKeys = dataKeysFrom(dek);
   const doc = JSON.parse(open2(dataKeys, file.data, 'data').toString('utf8'));
   return { dek, dataKeys, doc };
+}
+/** 다른 기기의 금고 파일(같은 DEK)에서 문서만 꺼내기 — 동기화 때 서버 사본을 합치려고 */
+function openDocWith(session, otherFile) {
+  return JSON.parse(open2(session.dataKeys, otherFile.data, 'data').toString('utf8'));
+}
+
+// ---------- 서버 계정 (아이디 · 비밀번호, 중계 서버에 암호문으로 보관) ----------
+// 서버 계정은 다른 기기에서 아이디 + 비밀번호만으로 열려야 해서, 비밀 키 자리에 아이디에서 만든 값(공개)을 쓴다.
+//  → 금고 형식은 그대로, 강도는 scrypt(N=2^17) + 비밀번호 (Bitwarden 같은 방식). 서버는 암호문과 로그인 확인 값만 가짐.
+// scrypt 한 번으로 두 값: 금고 열쇠(위 deriveMasterKeys 와 같은 계산) + 서버 로그인 확인 값 auth (다른 info 의 HKDF
+//  → auth 를 알아도 금고 열쇠는 알 수 없음. 서버는 auth 를 한 번 더 해시해서 저장)
+const normId = (id) => String(id || '').trim().toLowerCase();
+const accountSecret = (id) => crypto.createHash('sha256').update(`jam-account|${normId(id)}`).digest().subarray(0, SECRET_KEY_BYTES);
+async function deriveAccountKeys(password, salt, id, kdf) {
+  if (kdf.alg !== 'scrypt' || kdf.N < 1 << 14 || kdf.r < 8 || kdf.p < 1) throw new VaultError('bad-kdf', '지원하지 않는 설정이에요');
+  const pw = Buffer.from(String(password).normalize('NFKC'), 'utf8');
+  const stretched = await scrypt(pw, salt, kdf);
+  pw.fill(0);
+  const sk = accountSecret(id);
+  const okm = Buffer.from(crypto.hkdfSync('sha256', stretched, sk, Buffer.from('jam-vault v1 master'), 64));
+  const auth = Buffer.from(crypto.hkdfSync('sha256', stretched, sk, Buffer.from('jam-account v1 auth'), 32));
+  stretched.fill(0);
+  return { mk: { aes: okm.subarray(0, 32), chacha: okm.subarray(32, 64), wipe: () => okm.fill(0) }, auth };
+}
+/** 새 서버 계정 금고 → { file, session, auth } */
+async function createAccountVault({ id, password, doc, kdf = KDF_DEFAULT }) {
+  if (String(password || '').length < 10) throw new VaultError('weak', '비밀번호는 10자 이상이어야 해요');
+  const salt = crypto.randomBytes(32);
+  const dek = crypto.randomBytes(32);
+  const { mk, auth } = await deriveAccountKeys(password, salt, id, kdf);
+  const wrapped = seal2(mk, dek, 'dek');
+  mk.wipe();
+  const session = { dek, dataKeys: dataKeysFrom(dek), doc };
+  const file = { format: FORMAT, v: VERSION, kdf: { ...kdf, salt: salt.toString('base64') }, dek: wrapped, data: null };
+  file.data = sealDoc(session);
+  return { file, session, auth };
+}
+/** 서버 계정 금고 열기 → { session, auth }. 비밀번호가 틀리면 VaultError('auth') */
+async function unlockAccountVault(file, password, id) {
+  if (!file || file.format !== FORMAT || file.v !== VERSION) throw new VaultError('corrupt', '금고 파일 형식이 아니에요');
+  const kdf = { alg: file.kdf.alg, N: file.kdf.N, r: file.kdf.r, p: file.kdf.p };
+  const { mk, auth } = await deriveAccountKeys(password, Buffer.from(file.kdf.salt, 'base64'), id, kdf);
+  try {
+    return { session: openWithMasterKeys(file, mk), auth };
+  } catch (e) {
+    auth.fill(0);
+    throw e;
+  }
+}
+/** 서버에서 받은 kdf 로 로그인 확인 값만 (새 기기에서 로그인할 때, 금고 파일을 받기 전) */
+async function accountAuth(password, kdf, id) {
+  const { mk, auth } = await deriveAccountKeys(password, Buffer.from(kdf.salt, 'base64'), id, { alg: kdf.alg, N: kdf.N, r: kdf.r, p: kdf.p });
+  mk.wipe();
+  return auth;
+}
+/** 풀린 금고를 서버 계정 방식으로 다시 감싸기 (이 PC 계정 → 서버 계정 올리기, 서버 계정 비밀번호 바꾸기) → { file, auth } */
+async function rewrapForAccount(session, file, { id, password }) {
+  if (String(password || '').length < 10) throw new VaultError('weak', '비밀번호는 10자 이상이어야 해요');
+  const salt = crypto.randomBytes(32);
+  const kdf = { alg: file.kdf.alg, N: file.kdf.N, r: file.kdf.r, p: file.kdf.p };
+  const { mk, auth } = await deriveAccountKeys(password, salt, id, kdf);
+  const wrapped = seal2(mk, session.dek, 'dek');
+  mk.wipe();
+  return { file: { format: FORMAT, v: VERSION, kdf: { ...kdf, salt: salt.toString('base64') }, dek: wrapped, data: sealDoc(session) }, auth };
 }
 
 /** 풀린 상태에서 바뀐 내용을 다시 암호화해 새 파일 객체로 */
@@ -284,6 +351,13 @@ module.exports = {
   generatePassword,
   formatSecretKey,
   parseSecretKey,
+  // 서버 계정
+  createAccountVault,
+  unlockAccountVault,
+  accountAuth,
+  rewrapForAccount,
+  openDocWith,
+  normId,
   // 테스트용
-  _internal: { seal2, open2, deriveMasterKeys, dataKeysFrom, chacha20 },
+  _internal: { seal2, open2, deriveMasterKeys, deriveAccountKeys, accountSecret, dataKeysFrom, chacha20 },
 };

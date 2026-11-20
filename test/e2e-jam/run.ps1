@@ -6,7 +6,7 @@
 #   ... -Relay <path to jam-relay.js>   # default: ..\jam-backend-build\jam-relay.js next to this repo, or $env:JAM_E2E_RELAY
 #   ... -Tests update   # auto-update signature check: needs dist\win-unpacked + $env:JAM_BROWSER_RELEASE_KEY (the test starts its own app)
 param(
-  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'tabs', 'passkey', 'smoke', 'update'),
+  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'account', 'tabs', 'passkey', 'smoke', 'update'),
   [switch]$Packaged,
   [string]$Relay = $env:JAM_E2E_RELAY
 )
@@ -21,7 +21,7 @@ if (-not $Relay) { $cand = Join-Path (Split-Path $app -Parent) 'jam-backend-buil
 # tests that start their own app (update: packaged app + local update server). Starting the usual two apps first
 # would hold the same debug port, so the test would talk to the wrong app
 $selfLaunch = @('update')
-$viaRelay = @{ resume = 0; 'nearby' = 0; 'mirror' = 0; 'files' = 0; 'relay-cap' = 0.5 }
+$viaRelay = @{ account = 0; resume = 0;'nearby' = 0; 'mirror' = 0; 'files' = 0; 'relay-cap' = 0.5 }
 $exe = if ($Packaged) { "$app\dist\win-unpacked\Jam Browser.exe" } else { "$app\node_modules\electron\dist\electron.exe" }
 if (-not (Test-Path $exe)) { Write-Host "App not found: $exe" -ForegroundColor Red; exit 2 }
 New-Item -ItemType Directory -Force "$here\out" | Out-Null
@@ -60,8 +60,13 @@ foreach ($t in $Tests) {
     $relayPort = '43131'
     $env:PORT = $relayPort
     if ($viaRelay[$t] -gt 0) { $env:JAM_RELAY_GUEST_MBPS = "$($viaRelay[$t])" }
+    # browser accounts: open signup + an empty data folder every run
+    $relayData = "$here\out\relay-data"
+    if (Test-Path $relayData) { Remove-Item -Recurse -Force $relayData -Confirm:$false }
+    $env:JAM_RELAY_DATA = $relayData; $env:JAM_RELAY_SIGNUP = 'open'
     $relayProc = Start-Process -FilePath node -ArgumentList "`"$Relay`"" -PassThru -WindowStyle Hidden -RedirectStandardOutput "$here\out\relay.log" -RedirectStandardError "$here\out\relay.err"
     Remove-Item Env:PORT -ErrorAction SilentlyContinue; Remove-Item Env:JAM_RELAY_GUEST_MBPS -ErrorAction SilentlyContinue
+    Remove-Item Env:JAM_RELAY_DATA -ErrorAction SilentlyContinue; Remove-Item Env:JAM_RELAY_SIGNUP -ErrorAction SilentlyContinue
     if (-not (Wait-Http "http://127.0.0.1:$relayPort/version" 10)) { Write-Host '  relay did not start' -ForegroundColor Red }
   }
   $env:JAM_TEST_OFFSCREEN = '1'

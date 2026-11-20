@@ -73,6 +73,15 @@ contextBridge.exposeInMainWorld('jamApp', {
 contextBridge.exposeInMainWorld('jamVault', {
   status: () => ipcRenderer.invoke('vault:status'),
   create: (name, password) => ipcRenderer.invoke('vault:create', { name, password }),
+  // 서버 계정 (중계 서버에 아이디 · 암호화된 금고): 만들기 · 다른 기기에서 로그인 · 이 PC 계정 올리기 · 동기화
+  serverCreate: (arg) => ipcRenderer.invoke('vault:server-create', arg),
+  serverLogin: (arg) => ipcRenderer.invoke('vault:server-login', arg),
+  serverUpload: (arg) => ipcRenderer.invoke('vault:server-upload', arg),
+  syncNow: () => ipcRenderer.invoke('vault:sync-now'),
+  syncGet: () => ipcRenderer.invoke('vault:sync-get'),
+  syncPut: (key, value) => ipcRenderer.invoke('vault:sync-put', { key, value }),
+  onSync: (cb) => ipcRenderer.on('vault:sync', (_e, s) => cb(s)),
+  onChanged: (cb) => ipcRenderer.on('vault:changed', (_e, d) => cb(d)),
   unlock: (password, secretKey) => ipcRenderer.invoke('vault:unlock', { password, secretKey }),
   lock: () => ipcRenderer.invoke('vault:lock'),
   activity: () => ipcRenderer.invoke('vault:activity'),
