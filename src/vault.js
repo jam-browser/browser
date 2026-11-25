@@ -37,7 +37,7 @@ function originOf(url) {
   }
 }
 
-function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow, remoteTouched = () => false, getPrefs = () => ({}), fetch: fetchImpl = globalThis.fetch }) {
+function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow, remoteTouched = () => false, getPrefs = () => ({}), fetch: fetchImpl = globalThis.fetch, onFriendsChanged = () => {} }) {
   const SITE = require('../shared/site');
   const { domainToUnicode } = require('url');
   const warnedHosts = new Set();
@@ -125,14 +125,18 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     writeVaultFile(file);
     if (push && acct) schedulePush();
   }
+  const pairCache = new Map(); // 친구 공개 키 → 둘만 아는 비밀 (잠그면 지움)
   function lock(reason) {
     if (!session) return;
     stopSync();
+    for (const ss of pairCache.values()) ss.fill(0);
+    pairCache.clear();
     V.wipeSession(session);
     session = null;
     for (const c of captures.values()) c.password = '';
     captures.clear();
     send('vault:locked', { reason });
+    onFriendsChanged(); // 친구 상태: 올려 둔 것을 바로 지움 (오프라인)
   }
   async function verifyMaster(password) {
     if (file && file.account) {
@@ -247,6 +251,7 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     if (m.localChanged) {
       session.doc = m.doc;
       send('vault:changed', { sync: session.doc.sync || {} });
+      onFriendsChanged();
     }
     // 다른 기기에서 비밀번호를 바꿨으면 금고 열쇠 포장(kdf · dek)은 서버 것을 씀
     if (remote.kdf && remote.dek && (remote.kdf.salt !== file.kdf.salt || JSON.stringify(remote.dek) !== JSON.stringify(file.dek))) {
@@ -705,7 +710,19 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     lastActivity = Date.now();
     return { pub, sig: ID.signJoin(priv, nonce, code) };
   });
-  handle('friends:list', () => (session ? session.doc.friends.map(({ fp, name, addedAt }) => ({ fp, name, addedAt })) : []));
+  handle('friends:list', () => (session ? session.doc.friends.map(({ fp, name, addedAt, hideStatus }) => ({ fp, name, addedAt, hideStatus: !!hideStatus })) : []));
+  // 이 친구에게는 내 상태 숨기기 (그 친구에게만 오프라인으로 보임). 계정에 들어가서 내 다른 기기에도 같이
+  handle('friends:set-hide', ({ fp, hide }) => {
+    requireUnlocked();
+    const f = session.doc.friends.find((x) => x.fp === fp);
+    if (!f) throw new Error('친구 목록에 없어요');
+    if (hide) f.hideStatus = true;
+    else delete f.hideStatus;
+    f.updatedAt = Date.now();
+    persist();
+    onFriendsChanged();
+    return true;
+  });
   handle('friends:add', ({ code, name }) => {
     requireUnlocked();
     const p = ID.parseFriendCode(code);
@@ -717,6 +734,7 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     else session.doc.friends.push({ fp: p.fp, pub: p.pub, name: nm, addedAt: Date.now(), updatedAt: Date.now() });
     if (session.doc.tomb) delete session.doc.tomb[`f:${p.fp}`];
     persist();
+    onFriendsChanged();
     return { fp: p.fp, name: nm };
   });
   handle('friends:remove', ({ fp }) => {
@@ -724,6 +742,7 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     session.doc.friends = session.doc.friends.filter((f) => f.fp !== fp);
     bury(`f:${fp}`);
     persist();
+    onFriendsChanged();
     return true;
   });
 
@@ -827,6 +846,24 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
       return require('../shared/presence').derive(session.doc.identity.priv);
     },
     selfFp: () => (session ? ID.fingerprint(session.doc.identity.pub) : null),
+    // 친구 상태: 친구마다 둘만 아는 비밀 (메인 프로세스 안에서만 씀). 잠겨 있으면 null
+    friendPairs() {
+      if (!session) return null;
+      const FS = require('../shared/friend-status');
+      const { pub, priv } = session.doc.identity;
+      const pairs = [];
+      for (const f of session.doc.friends) {
+        const k = `${pub}|${f.pub}`;
+        let ss = pairCache.get(k);
+        if (!ss) {
+          ss = FS.pairSecret(priv, f.pub);
+          if (!ss) continue;
+          pairCache.set(k, ss);
+        }
+        pairs.push({ fp: f.fp, name: f.name, pub: f.pub, hide: !!f.hideStatus, ss });
+      }
+      return { me: pub, pairs };
+    },
   };
 }
 

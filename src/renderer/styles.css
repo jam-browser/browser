@@ -601,3 +601,20 @@ select.mirror-keys { max-width: 100%; height: 26px; border-radius: 6px; border: 
 #ls-login-warn, #ls-su-warn { color: #ffd43b; }
 #acc-server form { display: flex; flex-direction: column; gap: 6px; }
 #acc-sync-state.err { color: var(--danger); }
+
+/* ---------- 👥 친구 상태 ---------- */
+#friends-btn { position: relative; }
+.friends-badge { background: #2fb344; color: #fff; }
+.friends-pop { width: 360px; }
+.fr-me { display: flex; flex-direction: column; gap: 6px; background: var(--bg-3); border-radius: 8px; padding: 8px 10px; margin: 6px 0 10px; }
+.fr-me select { width: 100%; background: var(--bg-2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; font: inherit; }
+#fr-me-line { line-height: 1.4; overflow-wrap: anywhere; }
+.fr-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.fr-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; }
+.fr-row:hover { background: var(--bg-3); }
+.fr-row.offline { opacity: .65; }
+.fr-dot { width: 18px; text-align: center; flex-shrink: 0; }
+.fr-info { flex: 1; min-width: 0; }
+.fr-info b { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.fr-sub { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.fr-hide.active { border-color: #ffd43b; color: #ffd43b; }

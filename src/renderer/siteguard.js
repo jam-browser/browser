@@ -52,6 +52,7 @@
     $('#shield-cookies').disabled = info.cookiesMode !== 'block';
     $('#shield-local').checked = prefs.get('blockLocalNet') !== false && !info.localNet;
     $('#shield-local').disabled = prefs.get('blockLocalNet') === false;
+    $('#shield-friendhide').checked = !!info.friendHide;
     $('#shield-local-note').hidden = !info.localBlocked.length;
     $('#shield-local-note').textContent = info.localBlocked.length ? `🏠 이 페이지가 내 PC · 같은 네트워크 주소에 접속하려다 막혔어요: ${info.localBlocked.map(([h, c]) => `${h} (${c})`).join(', ')}` : '';
     const kinds = Object.keys(info.perms);
@@ -78,6 +79,13 @@
   $('#shield-on').addEventListener('change', () => setSite('shieldOff', !$('#shield-on').checked));
   $('#shield-cookies').addEventListener('change', () => setSite('cookies3p', !$('#shield-cookies').checked));
   $('#shield-local').addEventListener('change', () => setSite('localNet', !$('#shield-local').checked));
+  // 친구에게 이 사이트 숨기기: 새로고침 필요 없음, 바로 다른 사이트로 바꿔 보여 줌
+  $('#shield-friendhide').addEventListener('change', async () => {
+    if (!info) return;
+    await jamSite.set({ site: info.site, key: 'friendHide', value: $('#shield-friendhide').checked });
+    if (window.jamFriendStatus) await window.jamFriendStatus.reloadHidden();
+    renderPop();
+  });
   // 막혔을 때 한 번 알림 (페이지마다)
   const localToasted = new Set();
   jamSite.onLocal(({ wcId, url, kind }) => {
@@ -170,7 +178,7 @@
     if (!r) return;
     const rows = [];
     for (const [site, e] of Object.entries(r.sites).sort()) {
-      const what = [e.shieldOff ? '차단 끔' : null, e.cookies3p ? '서드파티 쿠키 허용' : null, e.localNet ? '내 PC · 같은 네트워크 접속 허용' : null].filter(Boolean).join(' · ');
+      const what = [e.shieldOff ? '차단 끔' : null, e.cookies3p ? '서드파티 쿠키 허용' : null, e.localNet ? '내 PC · 같은 네트워크 접속 허용' : null, e.friendHide ? '친구에게 숨김' : null].filter(Boolean).join(' · ');
       rows.push(
         el('li', { class: 'set-row' }, el('span', {}, `${site} — ${what}`), el('button', {
           class: 'mini-btn',
@@ -178,6 +186,8 @@
             await jamSite.set({ site, key: 'shieldOff', value: false });
             await jamSite.set({ site, key: 'cookies3p', value: false });
             await jamSite.set({ site, key: 'localNet', value: false });
+            await jamSite.set({ site, key: 'friendHide', value: false });
+            if (window.jamFriendStatus) await window.jamFriendStatus.reloadHidden();
             renderList();
           },
         }, '기본으로'))

@@ -17,7 +17,9 @@ const httpOnlyHosts = new Set();
 const { setupVault } = require('./vault');
 const { setupJamFiles, SCHEME: JAMFILE } = require('./jamfiles');
 const { setupSiteGuard } = require('./siteguard');
+const { setupFriendStatus } = require('./friend-status');
 let siteGuard = null;
+let friendStatus = null; // 친구 상태 (온라인 · 보는 사이트)
 
 // 같이 보는 파일: jamfile://<파일ID>/ (앱 준비 전에 등록해야 함)
 protocol.registerSchemesAsPrivileged([{ scheme: JAMFILE, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } }]);
@@ -684,6 +686,7 @@ function applyPrefs(prev) {
   }
   if (jamFilesApi) jamFilesApi.setLimits(prefs);
   if (siteGuard) siteGuard.applyPrefs();
+  if (friendStatus && prev && (prev.friendStatus !== prefs.friendStatus || prev.friendShowJam !== prefs.friendShowJam)) friendStatus.changed();
   // 근처 알림: 끄거나 간격이 바뀌면 다시 시작
   if (beacon && (!prefs.nearbyAnnounce || (prev && prev.nearbyIntervalSec !== prefs.nearbyIntervalSec))) {
     beacon.close();
@@ -1130,7 +1133,10 @@ function setupExtensions(ses) {
     }, 5000);
   });
 }
-app.on('before-quit', () => (quitting = true));
+app.on('before-quit', () => {
+  quitting = true;
+  if (friendStatus) friendStatus.goodbye(); // 친구에게 바로 오프라인으로
+});
 
 ipcMain.on('jam:lock', (_e, { wcId, locked }) => {
   if (locked) lockedJamTabs.add(wcId);
@@ -1214,7 +1220,16 @@ app.whenReady().then(() => {
     }
     cb({});
   }
-  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched, getPrefs: () => prefs, fetch: (u, o) => net.fetch(u, o) });
+  vaultApi = setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor, getWindow: () => mainWindow, remoteTouched, getPrefs: () => prefs, fetch: (u, o) => net.fetch(u, o), onFriendsChanged: () => friendStatus && friendStatus.changed() });
+  friendStatus = setupFriendStatus({
+    ipcMain,
+    vaultApi,
+    getPrefs: () => prefs,
+    powerMonitor,
+    fromApp,
+    send: (ch, data) => mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents.send(ch, data),
+    fetch: (u, o) => net.fetch(u, o),
+  });
   createWindow();
   startNearbyScanner();
   setupAutoUpdate();

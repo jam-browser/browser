@@ -14,6 +14,7 @@
 
   const PAGES = [
     { id: 'set-jam', label: 'Jam · 연결' },
+    { id: 'set-friends', label: '친구 상태' },
     { id: 'set-mirror', label: '화면 미러링' },
     { id: 'set-files', label: '같이 보는 파일' },
     { id: 'set-security', label: '보안 · 개인정보' },
@@ -22,6 +23,12 @@
   ];
 
   const S = [
+    // ---------- 친구 상태 ----------
+    { key: 'friendStatus', page: 'set-friends', group: '친구에게 보이는 내 상태', label: '보여 주기', type: 'select', def: 'site', main: true, options: [['site', '온라인 + 보는 사이트'], ['online', '온라인만 (사이트는 숨김)'], ['hidden', '숨기기 (오프라인으로 보임)']], help: '서로 친구로 추가했고 같은 중계 서버를 쓰는 친구에게만 보여요. 사이트는 이름만(youtube.com 처럼), 페이지 주소 · 제목은 안 보내요. 친구마다 숨기기는 👥 친구 창에서' },
+    { key: 'friendDecoy', page: 'set-friends', group: '친구에게 보이는 내 상태', label: '보여 주기 곤란한 사이트', type: 'select', def: 'often', options: [['often', '내가 자주 가는 다른 사이트로 바꿔 보여 주기'], ['hide', '사이트 없이 온라인만']], help: '성인 · 도박 · 토렌트 같은 사이트, 🛡 에서 "친구에게 숨기기" 한 사이트, 로그인 · 결제 페이지, 내 PC · 같은 네트워크 주소. 바꿔 보여 줄 때는 방금 보던 사이트를 이어서, 시간이 지나면 방문 기록에서 자주 가는 사이트로 (10~30분마다)' },
+    { key: 'friendShowJam', page: 'set-friends', group: '친구에게 보이는 내 상태', label: 'Jam 중인지도 보여 주기', type: 'bool', def: true, main: true },
+    { key: 'friendAwayMin', page: 'set-friends', group: '친구에게 보이는 내 상태', label: '이만큼 아무것도 안 하면 "자리 비움"', type: 'number', def: 10, min: 1, max: 240, unit: '분', main: true },
+    { key: 'friendNotify', page: 'set-friends', group: '친구 알림', label: '친구가 온라인이 되면 알림', type: 'bool', def: false },
     // ---------- Jam · 연결 ----------
     { key: 'maxMembers', page: 'set-jam', group: '인원 · 대기', label: '한 Jam 최대 인원', type: 'number', def: 64, min: 2, max: 64, unit: '명', main: true, help: '호스트 포함. 중계 서버를 거치면 서버 설정(기본 64명)도 함께 적용돼요' },
     { key: 'maxPending', page: 'set-jam', group: '인원 · 대기', label: '동시에 기다리는 참여 요청', type: 'number', def: 10, min: 1, max: 50, unit: '개', main: true },

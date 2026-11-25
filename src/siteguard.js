@@ -374,6 +374,7 @@ function setupSiteGuard({ app, ipcMain, net, webContents, getWindow, getPrefs, t
       shieldOff: !!(site && siteEntry(site).shieldOff),
       cookies3p: !!(site && siteEntry(site).cookies3p),
       localNet: !!(site && siteEntry(site).localNet),
+      friendHide: !!(site && siteEntry(site).friendHide),
       localBlocked: s && s.local ? [...s.local.entries()] : [],
       perms: origin ? { ...(store.perms[origin] || {}) } : {},
       blocked: s ? s.n : 0,
@@ -383,7 +384,8 @@ function setupSiteGuard({ app, ipcMain, net, webContents, getWindow, getPrefs, t
     };
   });
   handle('site:set', ({ site, origin, key, value }) => {
-    if (key === 'shieldOff' || key === 'cookies3p' || key === 'localNet') {
+    // friendHide: 친구에게 이 사이트 대신 다른 사이트를 보여 줌 (앱 화면의 friends.js 가 씀)
+    if (key === 'shieldOff' || key === 'cookies3p' || key === 'localNet' || key === 'friendHide') {
       if (typeof site !== 'string' || !site || site.length > 253) return false;
       const e = { ...(store.sites[site] || {}) };
       if (value) e[key] = true;
