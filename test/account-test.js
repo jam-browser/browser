@@ -15,11 +15,14 @@ const API = require('../src/account-api');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // ---------- 가짜 중계 서버 (jam-browser/backend 의 /account/* 계약) ----------
-function fakeRelay({ signup = 'invite', invites = ['JINV-TEST-0001'] } = {}) {
+// identity: 서버 신원 키 (1.3.0 흉내 — hello 서명 · 로그인 응답의 server.key/lan). lanPort 를 주면 같은 서버를 다른 포트로도 (LAN 주소 흉내)
+function fakeRelay({ signup = 'invite', invites = ['JINV-TEST-0001'], identity = null, lan = [] } = {}) {
   const accounts = new Map(); // id → { verifier, vault, rev }
   const tokens = new Map(); // token → id
   const seen = []; // 서버가 받은 원문 (평문 유출 검사)
   const inv = new Set(invites);
+  const pub = identity ? crypto.createPublicKey(identity).export({ type: 'spki', format: 'der' }).subarray(12).toString('base64url') : null;
+  const info = () => (identity ? { server: { key: pub, lan: typeof lan === 'function' ? lan() : lan } } : {});
   const hash = (auth, salt) => crypto.scryptSync(Buffer.from(auth, 'base64'), salt, 32, { N: 16384, r: 8, p: 1 });
   const srv = http.createServer((req, res) => {
     let body = '';
@@ -45,6 +48,11 @@ function fakeRelay({ signup = 'invite', invites = ['JINV-TEST-0001'] } = {}) {
         return { salt: salt.toString('base64'), hash: hash(auth, salt).toString('base64') };
       };
       switch (`${req.method} ${u.pathname}`) {
+        case 'GET /account/hello': {
+          if (!identity) return send(404, { error: 'nope' });
+          const nonce = u.searchParams.get('nonce');
+          return send(200, { key: pub, sig: crypto.sign(null, Buffer.from(`jam-relay-hello|${nonce}`), identity).toString('base64url') });
+        }
         case 'POST /account/prelogin': {
           const a = accounts.get(j.id);
           return send(200, { kdf: a ? a.vault.kdf : { alg: 'scrypt', N: 131072, r: 8, p: 1, salt: crypto.createHash('sha256').update('fake' + j.id).digest('base64') } });
@@ -54,12 +62,12 @@ function fakeRelay({ signup = 'invite', invites = ['JINV-TEST-0001'] } = {}) {
           if (signup === 'invite' && !inv.delete(j.invite)) return send(403, { error: 'bad-invite' });
           if (accounts.has(j.id)) return send(409, { error: 'id-taken' });
           accounts.set(j.id, { verifier: mkVerifier(j.auth), vault: j.vault, rev: 1 });
-          return send(201, { token: newToken(j.id), rev: 1 });
+          return send(201, { token: newToken(j.id), rev: 1, ...info() });
         }
         case 'POST /account/login': {
           const a = accounts.get(j.id);
           if (!verify(a, j.auth)) return send(401, { error: 'bad-login' });
-          return send(200, { token: newToken(j.id), rev: a.rev, vault: a.vault });
+          return send(200, { token: newToken(j.id), rev: a.rev, vault: a.vault, ...info() });
         }
         case 'GET /account/vault': {
           if (!me) return send(401, { error: 'bad-token' });
@@ -100,12 +108,17 @@ function fakeRelay({ signup = 'invite', invites = ['JINV-TEST-0001'] } = {}) {
       }
     });
   });
-  return new Promise((r) => srv.listen(0, '127.0.0.1', () => r({ srv, accounts, tokens, seen, addr: `127.0.0.1:${srv.address().port}` })));
+  // 같은 서버를 두 번째 포트로도 (LAN 주소 흉내)
+  const second = http.createServer((q, s) => srv.emit('request', q, s));
+  return new Promise((r) =>
+    srv.listen(0, '127.0.0.1', () =>
+      second.listen(0, '127.0.0.1', () => r({ srv, second, accounts, tokens, seen, addr: `127.0.0.1:${srv.address().port}`, lanBase: `http://127.0.0.1:${second.address().port}` }))
+    )
+  );
 }
 
 // ---------- 기기 (src/vault.js 그대로, Electron 흉내) ----------
-function device(name) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `jam-acct-${name}-`));
+function device(name, dir = fs.mkdtempSync(path.join(os.tmpdir(), `jam-acct-${name}-`))) {
   const handlers = new Map();
   const events = [];
   const win = { isDestroyed: () => false, isFocused: () => false, webContents: { send: (ch, d) => events.push([ch, d]) } };
@@ -218,21 +231,40 @@ function device(name) {
 
   // 비밀번호 바꾸기 (A) → B 는 옛 비밀번호로 못 열고 새 비밀번호로 열림
   assert.equal((await A.call('vault:change-password', { oldPassword: PW, newPassword: 'New-Password-2026!' })).ok, true);
-  await B.call('vault:lock');
-  const bad = await B.call('vault:unlock', { password: PW });
-  assert.equal(bad.ok, true); // 이 PC 의 옛 사본은 옛 비밀번호로 열림 (오프라인)
   await sleep(500);
   await B.call('vault:sync-now').catch(() => null);
   assert.equal((await B.call('vault:status')).sync.state, 'relogin');
   await B.call('vault:lock');
+  // 잠금 해제도 반드시 서버를 거침 → 이 PC 의 옛 사본이 옛 비밀번호로 열리지 않음
+  const bad = await B.call('vault:unlock', { password: PW });
+  assert.deepEqual([bad.ok, bad.error], [false, 'wrong']);
   const good = await B.call('vault:unlock', { password: 'New-Password-2026!' });
   assert.equal(good.ok, true);
+  assert.equal(good.via, 'online');
   await sleep(500);
   await B.call('vault:sync-now');
   assert.equal((await B.call('vault:status')).sync.state, 'ok');
-  await B.call('vault:lock');
-  assert.equal((await B.call('vault:unlock', { password: 'New-Password-2026!' })).ok, true); // 이제 이 PC 사본도 새 비밀번호
-  ok('한 기기에서 비밀번호를 바꾸면 다른 기기는 "다시 로그인 필요" → 새 비밀번호로 열면 서버에서 새 금고를 받아 이어짐');
+  ok('한 기기에서 비밀번호를 바꾸면 다른 기기는 "다시 로그인 필요" → 옛 비밀번호는 서버가 거절, 새 비밀번호로 열면 서버에서 새 금고를 받아 이어짐');
+
+  // 자동 로그인 (기본 켜짐): 앱을 다시 켜면(같은 폴더의 새 인스턴스) 비밀번호 없이 서버에 로그인
+  assert.equal((await B.call('vault:status')).autoLogin, true);
+  const B2 = device('b2', B.dir);
+  const auto = await B2.call('vault:auto-login');
+  assert.equal(auto.ok, true, JSON.stringify(auto));
+  assert.deepEqual((await B2.call('vault:logins')).map((l) => l.origin), ['https://other.example']);
+  // 다른 기기(A)가 비밀번호를 또 바꾸면 저장된 자동 로그인은 낡음 → relogin (저장값 지움)
+  assert.equal((await A.call('vault:change-password', { oldPassword: 'New-Password-2026!', newPassword: 'Third-Password-33!' })).ok, true);
+  const B3 = device('b3', B.dir);
+  const stale = await B3.call('vault:auto-login');
+  assert.equal(stale.error, 'relogin');
+  assert.equal((await B3.call('vault:status')).autoLogin, false);
+  assert.equal((await B3.call('vault:unlock', { password: 'Third-Password-33!', remember: false })).ok, true);
+  assert.equal((await B3.call('vault:status')).autoLogin, false); // 자동 로그인 끄고 로그인
+  // A 는 비밀번호를 바꾼 기기라 자동 로그인 값도 새 비밀번호로 바뀜
+  const A2 = device('a2', A.dir);
+  assert.equal((await A2.call('vault:auto-login')).ok, true);
+  for (const d of [B2, A2]) await d.call('vault:lock');
+  ok('자동 로그인: 다시 켜면 비밀번호 없이 서버에 로그인 · 다른 기기에서 비밀번호가 바뀌면 relogin(저장값 지움) · 바꾼 기기는 새 값으로 · 끌 수 있음');
 
   // 이 PC 계정 → 서버 계정으로 올리기
   const C = device('c');
@@ -250,6 +282,14 @@ function device(name) {
   assert.equal((await C.call('vault:unlock', { password: 'Local-Only-Pass-9' })).ok, true); // 비밀 키 없이
   ok('이 PC 계정을 서버 계정으로 올리기 (계정 비밀번호 확인) → 다른 기기에서 로그인 · 이 PC 는 비밀 키 없이 열림');
 
+  // 로그아웃: 이 PC 사본 · 자동 로그인을 지움, 서버 계정은 그대로 → 다시 로그인하면 돌아옴
+  assert.equal(await C.call('vault:logout'), true);
+  const cs = await C.call('vault:status');
+  assert.deepEqual([cs.exists, cs.unlocked, cs.autoLogin], [false, false, false]);
+  await C.call('vault:server-login', { server: relay2.addr, id: 'carol', password: 'Local-Only-Pass-9' });
+  assert.deepEqual((await C.call('vault:logins')).map((l) => l.username), ['carol']);
+  ok('로그아웃 → 이 PC 사본 · 자동 로그인 지움 · 다시 로그인하면 서버에서 그대로 돌아옴');
+
   // 계정 지우기 (서버에서도)
   assert.equal(await D.call('vault:delete-account'), true);
   assert.equal(relay2.accounts.has('carol'), false);
@@ -263,8 +303,48 @@ function device(name) {
   old.close();
   ok('브라우저 계정을 모르는 옛 중계 서버면 "1.1.0 부터" 안내');
 
+  // ---- 온라인 → 같은 네트워크(LAN) 로그인 · 서버 키 확인 · 둘 다 안 되면 로그인 안 됨 ----
+  const idKey = crypto.generateKeyPairSync('ed25519').privateKey;
+  let lanList = [];
+  const R3 = await fakeRelay({ signup: 'open', identity: idKey, lan: () => lanList });
+  const impostor = await fakeRelay({ signup: 'open', identity: crypto.generateKeyPairSync('ed25519').privateKey }); // 다른 와이파이의 "같은 IP" 흉내
+  lanList = [impostor.lanBase, R3.lanBase];
+  const G = device('g');
+  await G.call('vault:server-create', { server: R3.addr, id: 'gina', name: '지나', password: 'Gina-Password-11', invite: '' });
+  await G.call('vault:login-save', { origin: 'https://lan.example', username: 'g', password: 'Lan-Pass-1!' });
+  await sleep(2200);
+  const meta = JSON.parse(Buffer.from(fs.readFileSync(path.join(G.dir, 'vault', 'profile.jvault'), 'utf8').replace(/^JVDP1\n/, ''), 'base64').toString('utf8')).account; // DPAPI 흉내 = base64
+  assert.deepEqual(meta.lan, [impostor.lanBase, R3.lanBase]);
+  assert.match(meta.serverKey, /^[A-Za-z0-9_-]{43}$/);
+  await G.call('vault:lock');
+  R3.srv.close(); // 인터넷 주소가 안 됨 (LAN 주소는 살아 있음)
+  await sleep(100);
+  const viaLan = await G.call('vault:unlock', { password: 'Gina-Password-11' });
+  assert.deepEqual([viaLan.ok, viaLan.via], [true, 'lan'], JSON.stringify(viaLan));
+  assert.equal((await G.call('vault:status')).via, 'lan');
+  // 서버 키가 다른 곳(impostor)에는 로그인 값을 보내지 않음
+  assert.ok(!impostor.seen.some((b) => b.includes('"auth"')), 'impostor got auth');
+  await G.call('vault:lock');
+  // 자동 로그인도 LAN 으로
+  const G2 = device('g2', G.dir);
+  assert.equal((await G2.call('vault:auto-login')).via, 'lan');
+  await G2.call('vault:lock');
+  // 둘 다 안 되면 로그인 안 됨 (이 PC 사본으로 열지 않음) · 자동 로그인은 저장값을 지우지 않고 offline
+  R3.second.close();
+  await sleep(100);
+  const off = await G.call('vault:unlock', { password: 'Gina-Password-11' });
+  assert.deepEqual([off.ok, off.error], [false, 'offline']);
+  const G3 = device('g3', G.dir);
+  const offAuto = await G3.call('vault:auto-login');
+  assert.equal(offAuto.error, 'offline');
+  assert.equal((await G3.call('vault:status')).autoLogin, true);
+  impostor.srv.close();
+  impostor.second.close();
+  ok('인터넷 주소가 안 되면 같은 네트워크 주소로 로그인 (서버 키 서명 확인 — 키가 다른 곳에는 로그인 값을 안 보냄) · 둘 다 안 되면 로그인 안 됨(offline), 자동 로그인 값은 남김');
+
   for (const d of [A, B, C, D]) await d.call('vault:lock');
   relay2.srv.close();
+  relay2.second.close();
   console.log(`\n서버 계정 · 동기화 테스트 통과 (${n}개)`);
   process.exit(0);
 })().catch((e) => {

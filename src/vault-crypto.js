@@ -262,11 +262,12 @@ async function createAccountVault({ id, password, doc, kdf = KDF_DEFAULT }) {
   const dek = crypto.randomBytes(32);
   const { mk, auth } = await deriveAccountKeys(password, salt, id, kdf);
   const wrapped = seal2(mk, dek, 'dek');
+  const mkBytes = mkToBytes(mk);
   mk.wipe();
   const session = { dek, dataKeys: dataKeysFrom(dek), doc };
   const file = { format: FORMAT, v: VERSION, kdf: { ...kdf, salt: salt.toString('base64') }, dek: wrapped, data: null };
   file.data = sealDoc(session);
-  return { file, session, auth };
+  return { file, session, auth, mkBytes };
 }
 /** 서버 계정 금고 열기 → { session, auth }. 비밀번호가 틀리면 VaultError('auth') */
 async function unlockAccountVault(file, password, id) {
@@ -286,15 +287,36 @@ async function accountAuth(password, kdf, id) {
   mk.wipe();
   return auth;
 }
-/** 풀린 금고를 서버 계정 방식으로 다시 감싸기 (이 PC 계정 → 서버 계정 올리기, 서버 계정 비밀번호 바꾸기) → { file, auth } */
+/** 풀린 금고를 서버 계정 방식으로 다시 감싸기 (이 PC 계정 → 서버 계정 올리기, 서버 계정 비밀번호 바꾸기) → { file, auth, mkBytes } */
 async function rewrapForAccount(session, file, { id, password }) {
   if (String(password || '').length < 10) throw new VaultError('weak', '비밀번호는 10자 이상이어야 해요');
   const salt = crypto.randomBytes(32);
   const kdf = { alg: file.kdf.alg, N: file.kdf.N, r: file.kdf.r, p: file.kdf.p };
   const { mk, auth } = await deriveAccountKeys(password, salt, id, kdf);
   const wrapped = seal2(mk, session.dek, 'dek');
+  const mkBytes = mkToBytes(mk);
   mk.wipe();
-  return { file: { format: FORMAT, v: VERSION, kdf: { ...kdf, salt: salt.toString('base64') }, dek: wrapped, data: sealDoc(session) }, auth };
+  return { file: { format: FORMAT, v: VERSION, kdf: { ...kdf, salt: salt.toString('base64') }, dek: wrapped, data: sealDoc(session) }, auth, mkBytes };
+}
+
+// ---------- 자동 로그인: 금고 열쇠(64바이트)를 Windows 계정 암호화(DPAPI)로 이 PC 에 보관 ----------
+const mkToBytes = (mk) => Buffer.concat([mk.aes, mk.chacha]);
+const mkFromBytes = (buf) => {
+  const b = Buffer.from(buf); // 복사본 (열고 나면 지움)
+  if (b.length !== 64) throw new VaultError('bad-key', '저장된 로그인 정보가 이상해요');
+  return { aes: b.subarray(0, 32), chacha: b.subarray(32, 64), wipe: () => b.fill(0) };
+};
+/** 서버가 준 kdf 로 금고 열쇠 + 로그인 확인 값 → { mkBytes, auth } */
+async function accountKeys(password, kdf, id) {
+  const { mk, auth } = await deriveAccountKeys(password, Buffer.from(kdf.salt, 'base64'), id, { alg: kdf.alg, N: kdf.N, r: kdf.r, p: kdf.p });
+  const mkBytes = mkToBytes(mk);
+  mk.wipe();
+  return { mkBytes, auth };
+}
+/** 금고 열쇠 바이트로 서버 계정 금고 열기 → session. 비밀번호가 바뀌어 안 맞으면 VaultError('auth') */
+function openAccountWith(file, mkBytes) {
+  if (!file || file.format !== FORMAT || file.v !== VERSION) throw new VaultError('corrupt', '금고 파일 형식이 아니에요');
+  return openWithMasterKeys(file, mkFromBytes(mkBytes));
 }
 
 /** 풀린 상태에서 바뀐 내용을 다시 암호화해 새 파일 객체로 */
@@ -356,6 +378,8 @@ module.exports = {
   unlockAccountVault,
   accountAuth,
   rewrapForAccount,
+  accountKeys,
+  openAccountWith,
   openDocWith,
   normId,
   // 테스트용

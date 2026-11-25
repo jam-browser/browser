@@ -65,10 +65,7 @@ const relayStatus = async () => (await (await fetch(`http://127.0.0.1:${RELAY}/s
 
   // ---- A: 계정 + Jam ----
   const A = await target(P.host);
-  await until('A welcome', () => A.ev(`typeof account==='object' && !${q('#ls-welcome')}.hidden`), 20000);
-  await A.ev(`${q('#ls-go-create')}.click(); ${q('#ls-name')}.value='나'; ${q('#ls-pw')}.value=${JSON.stringify(PW)}; ${q('#ls-pw2')}.value=${JSON.stringify(PW)}; ${q('#ls-create')}.requestSubmit(); 1`);
-  const sk = await until('A secret', () => A.ev(`!${q('#ls-secret')}.hidden && ${q('#ls-secret-text')}.textContent`), 30000);
-  await A.ev(`${q('#ls-secret-ok')}.click(); ${q('#ls-secret-done')}.click(); 1`);
+  await require('./signup').signup(A, { relayPort: RELAY, id: 'resume.me', name: '나', pw: PW });
   await until('A booted', () => A.ev(`${q('#lock-screen')}.hidden && tabs.length > 0`), 20000);
   await A.ev(`${q('#server-url')}.value='127.0.0.1:${RELAY}'; ${q('#access-mode')}.value='approval'; ${q('#access-mode')}.dispatchEvent(new Event('change')); ${q('#name')}.value='나 (데스크톱)'; 1`);
   await A.ev(`navigateTab(activeTab, 'http://localhost:8766/long'); 1`);
@@ -79,23 +76,17 @@ const relayStatus = async () => (await (await fetch(`http://127.0.0.1:${RELAY}/s
   await until('presence at relay', async () => (await relayStatus()).presence === 1, 10000);
   step(`A (account "나") started a Jam via the relay; the relay holds 1 encrypted presence (it only sees a random ID + ciphertext)`);
 
-  // ---- B: 계정 백업 파일 + 비밀 키로 옮기기 (사용자가 하는 그대로: A 백업 → B 첫 화면 "백업 불러오기") ----
-  if (!process.env.JAM_TEST_DIALOG_FILE) throw new Error('JAM_TEST_DIALOG_FILE 이 필요해요 (run.ps1 이 넣어 줌)');
-  fs.rmSync(process.env.JAM_TEST_DIALOG_FILE, { force: true });
-  const saved = await A.ev(`jamVault.exportBackup()`);
-  if (!saved || !fs.existsSync(process.env.JAM_TEST_DIALOG_FILE)) throw new Error('backup not written');
+  // ---- B: 같은 아이디로 로그인 (다른 기기) ----
   const B = await target(P.guest);
   await until('B welcome', () => B.ev(`typeof account==='object' && !${q('#ls-welcome')}.hidden`), 20000);
-  // 중계 서버 주소는 잠금 해제 전에 (잠금을 풀자마자 찾음)
-  await B.ev(`window.__toasts=[]; { const o = toast; toast = (t, a) => { window.__toasts.push(t); return o(t, a); }; } ${q('#server-url')}.value='127.0.0.1:${RELAY}'; ${q('#ls-go-import')}.click(); 1`);
-  await until('B unlock screen', () => B.ev(`!${q('#ls-unlock')}.hidden`), 15000);
-  const needSk = await B.ev(`!${q('#ls-sk-row')}.hidden`);
-  await B.ev(`${q('#ls-unlock-pw')}.value=${JSON.stringify(PW)}; ${q('#ls-unlock-sk')}.value=${JSON.stringify(sk)}; ${q('#ls-unlock')}.requestSubmit(); 1`);
+  // 중계 서버 주소는 로그인 전에 (로그인하자마자 찾음)
+  await B.ev(`window.__toasts=[]; { const o = toast; toast = (t, a) => { window.__toasts.push(t); return o(t, a); }; } ${q('#server-url')}.value='127.0.0.1:${RELAY}'; ${q('#ls-go-login')}.click(); 1`);
+  await until('B login form', () => B.ev(`!${q('#ls-login')}.hidden`), 15000);
+  await B.ev(`${q('#ls-srv')}.value='127.0.0.1:${RELAY}'; ${q('#ls-id')}.value='resume.me'; ${q('#ls-login-pw')}.value=${JSON.stringify(PW)}; ${q('#ls-login')}.requestSubmit(); 1`);
   await until('B unlocked', () => B.ev(`${q('#lock-screen')}.hidden && account.isUnlocked()`), 30000).catch(async (e) => {
-    throw new Error(e.message + ' — ' + JSON.stringify(await B.ev(`({ msg: ${q('#ls-unlock-msg')}.textContent, steps: [...document.querySelectorAll('.ls-step')].filter(s => !s.hidden).map(s => s.id) })`)));
+    throw new Error(e.message + ' — ' + JSON.stringify(await B.ev(`({ msg: ${q('#ls-login-msg')}.textContent, steps: [...document.querySelectorAll('.ls-step')].filter(s => !s.hidden).map(s => s.id) })`)));
   });
-  fs.rmSync(process.env.JAM_TEST_DIALOG_FILE, { force: true });
-  step(`B: imported A's account backup on the first screen + password${needSk ? ' + secret key' : ''} → unlocked`);
+  step(`B: logged in with the same ID on the first screen (server account) → unlocked`);
 
   const card = await until('B resume card', () => B.ev(`!${q('#resume-box')}.hidden && ${q('#resume-list')}.textContent.includes('이어 보기') && ${q('#resume-list')}.textContent`), 15000);
   const toastT = await B.ev(`window.__toasts.find(t => t.includes('내 다른 기기')) || ''`);

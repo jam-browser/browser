@@ -49,11 +49,9 @@ const step = (s) => console.log('✓', s);
 const q = (s) => `document.querySelector(${JSON.stringify(s)})`;
 const hookToasts = `window.__toasts=[]; if(!window.__th){ window.__th=1; const o=toast; toast=(t,a)=>{window.__toasts.push(t); return o(t,a)} } 1`;
 
+// 계정(비밀번호 저장 막기 확인용)은 서버 계정 — run.ps1 이 중계 서버를 띄워 줌. Jam 자체는 예전처럼 직접 연결
 async function createAccount(X, name, pw) {
-  await until('welcome', () => X.ev(`typeof account==='object' && !${q('#lock-screen')}.hidden && !${q('#ls-welcome')}.hidden`), 20000);
-  await X.ev(`${q('#ls-go-create')}.click(); ${q('#ls-name')}.value=${JSON.stringify(name)}; ${q('#ls-pw')}.value=${JSON.stringify(pw)}; ${q('#ls-pw2')}.value=${JSON.stringify(pw)}; ${q('#ls-create')}.requestSubmit(); 1`);
-  await until('secret key', () => X.ev(`!${q('#ls-secret')}.hidden && ${q('#ls-secret-text')}.textContent`), 30000);
-  await X.ev(`${q('#ls-secret-ok')}.click(); ${q('#ls-secret-done')}.click(); 1`);
+  await require('./signup').signup(X, { relayPort: process.argv[3], id: 'mirror.host', name, pw });
   await until('booted', () => X.ev(`${q('#lock-screen')}.hidden && tabs.length > 0`), 20000);
 }
 
@@ -69,7 +67,7 @@ async function createAccount(X, name, pw) {
 
   await A.ev(`navigateTab(activeTab, '${SITE}/game'); 1`);
   await until('game page', () => A.ev(`activeTab.url.startsWith('${SITE}/game') && !activeTab.loading`));
-  const RELAY = process.argv[3];
+  const RELAY = process.env.JAM_E2E_MIRROR_VIA_RELAY ? process.argv[3] : ''; // 기본: 직접 연결 (계정용 중계 서버와 별개)
   await A.ev(`${q('#server-url')}.value=${JSON.stringify(RELAY ? `127.0.0.1:${RELAY}` : '')}; 1`);
   await A.ev(`${q('#name')}.value='호스트'; ${q('#access-mode')}.value='open'; ${q('#access-mode')}.dispatchEvent(new Event('change')); ${q('#start-jam')}.click(); 1`);
   const invite = await until('host started', () => A.ev(`jam.active && jam.invite`), 20000);

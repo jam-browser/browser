@@ -48,14 +48,16 @@ async function until(label, fn, ms = 15000) {
 const step = (s) => console.log('✓', s);
 const q = (sel) => `document.querySelector(${JSON.stringify(sel)})`;
 
-async function createAccount(X, name, pw) {
+// v0.6.0: 계정은 서버 계정만 → 첫 화면에서 중계 서버에 가입
+const { signup } = require('./signup');
+const RELAY = process.argv[3];
+async function createAccount(X, name, pw, id) {
   await until('welcome', () => X.ev(`!${q('#lock-screen')}.hidden && !${q('#ls-welcome')}.hidden`));
   const tabsBefore = await X.ev('tabs.length');
-  await X.ev(`${q('#ls-go-create')}.click(); ${q('#ls-name')}.value=${JSON.stringify(name)}; ${q('#ls-pw')}.value=${JSON.stringify(pw)}; ${q('#ls-pw2')}.value=${JSON.stringify(pw)}; ${q('#ls-create')}.requestSubmit(); 1`);
-  const sk = await until('secret key', () => X.ev(`!${q('#ls-secret')}.hidden && ${q('#ls-secret-text')}.textContent`), 20000);
-  await X.ev(`${q('#ls-secret-ok')}.click(); ${q('#ls-secret-done')}.click(); 1`);
-  await until('booted', () => X.ev(`${q('#lock-screen')}.hidden && tabs.length > 0`));
-  return { sk, tabsBefore };
+  const buttons = await X.ev(`[...document.querySelectorAll('#ls-welcome button')].filter(b => !b.hidden).map(b => b.textContent.trim())`);
+  await signup(X, { relayPort: RELAY, id, name, pw });
+  await until('booted', () => X.ev(`${q('#lock-screen')}.hidden && tabs.length > 0`), 20000);
+  return { tabsBefore, buttons };
 }
 
 (async () => {
@@ -71,11 +73,13 @@ async function createAccount(X, name, pw) {
   // 1. 계정 만들기 (처음 화면 → 만들기 → 비밀 키)
   await sleep(500);
   await shot(A, 'v1-welcome.png');
-  const a = await createAccount(A, '호스트', PW_A);
+  if (!RELAY) throw new Error('needs a relay (-Relay)');
+  const a = await createAccount(A, '호스트', PW_A, 'vault.host');
   if (a.tabsBefore !== 0) throw new Error('tabs opened behind the lock screen: ' + a.tabsBefore);
-  if (!/^JK1(-[A-HJ-NP-Z2-9]{4}){8}$/.test(a.sk)) throw new Error('secret key format ' + a.sk);
-  step(`account created: welcome screen first (no tabs behind it), secret key shown ${a.sk.slice(0, 9)}…, browser started after`);
-  const bAcc = await createAccount(B, '게스트', PW_B);
+  // 테스트 모드라서 "계정 없이 (테스트)" 만 더 보임. 예전 "이 PC 에만" · "백업 불러오기" 는 없음
+  if (a.buttons.some((b) => /이 PC 에만|백업/.test(b))) throw new Error('local-only options still shown ' + JSON.stringify(a.buttons));
+  step(`account created on the relay: welcome screen first (no tabs behind it), buttons ${JSON.stringify(a.buttons)}, browser started after`);
+  await createAccount(B, '게스트', PW_B, 'vault.guest');
   step('second instance account created');
 
   // 2. 잠금 / 틀린 비밀번호 / 해제

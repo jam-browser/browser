@@ -475,23 +475,49 @@
         <h2>브라우저 계정</h2>
         <p>중계 서버에 <b>아이디</b>로 로그인하면 비밀번호 뱅크 · 친구 · 북마크 · 설정이 <b>내 다른 기기와 같이</b> 쓰여요.
           친구 코드를 주고받으면 <b>"친구만 들어오는 Jam"</b>도 열 수 있어요.</p>
-        <p class="muted small">서버에는 이 PC 에서 암호화한 데이터만 가요. 비밀번호는 서버도, 서버 주인도 몰라요.</p>
+        <p class="muted small">서버에는 이 PC 에서 암호화한 데이터만 가요. 비밀번호는 서버도, 서버 주인도 몰라요.
+          로그인은 늘 중계 서버를 거쳐요 (인터넷이 안 되면 같은 네트워크의 중계 서버로).</p>
         <div class="ls-actions">
           <button id="ls-go-login" class="primary-btn">로그인</button>
           <button id="ls-go-signup" class="secondary-btn">새 계정 만들기</button>
         </div>
         <div class="ls-actions ls-more">
-          <button id="ls-go-create" class="text-btn small">서버 없이 이 PC 에만 계정 만들기</button>
-          <button id="ls-go-import" class="text-btn small">백업 파일 불러오기</button>
-          <button id="ls-skip" class="text-btn small">계정 없이 시작</button>
+          <!-- 테스트(JAM_TEST_OFFSCREEN)에서만 보임: 계정과 상관없는 기능 테스트용 -->
+          <button id="ls-skip" class="text-btn small" hidden>계정 없이 시작 (테스트)</button>
         </div>
       </section>
+
+      <section id="ls-auto" class="ls-step" hidden>
+        <h2>로그인 중…</h2>
+        <p id="ls-auto-who" class="muted small"></p>
+        <div id="ls-auto-msg" class="ls-msg"></div>
+        <div class="ls-actions">
+          <button id="ls-auto-retry" type="button" class="primary-btn" hidden>다시 시도</button>
+          <button id="ls-auto-pw" type="button" class="text-btn" hidden>비밀번호로 로그인</button>
+        </div>
+      </section>
+
+      <form id="ls-migrate" class="ls-step" hidden autocomplete="off">
+        <h2>서버 계정으로 옮기기</h2>
+        <p>이제 브라우저 계정은 <b>중계 서버에 로그인하는 계정</b>만 써요. 이 PC 에만 있던 계정을 서버 계정으로 옮겨 주세요.
+          저장한 비밀번호 · 친구 · 신원 키는 그대로 옮겨져요 (서버에는 암호화된 채로만 가요).</p>
+        <label class="field"><span>중계 서버 주소</span><input id="ls-mg-srv" type="text" spellcheck="false" placeholder="relay.example.com:3031" /></label>
+        <label class="field"><span>만들 아이디 (영어 소문자 · 숫자 · . _ -, 3~32자)</span><input id="ls-mg-id" type="text" spellcheck="false" maxlength="32" autocapitalize="off" /></label>
+        <label class="field"><span>초대 코드 (서버 주인에게 받은 JINV-… · 필요한 서버만)</span><input id="ls-mg-invite" type="text" spellcheck="false" maxlength="40" /></label>
+        <label class="field"><span>지금 계정 비밀번호 (서버 계정 비밀번호가 돼요)</span><input id="ls-mg-pw" type="password" maxlength="200" /></label>
+        <label class="toggle"><input id="ls-mg-remember" type="checkbox" checked /><span>자동 로그인 (이 PC 에서는 다음부터 비밀번호 없이)</span></label>
+        <div id="ls-mg-msg" class="ls-msg"></div>
+        <div class="ls-actions">
+          <button id="ls-mg-btn" type="submit" class="primary-btn">옮기고 시작하기</button>
+        </div>
+      </form>
 
       <form id="ls-login" class="ls-step" hidden autocomplete="off">
         <h2>로그인</h2>
         <label class="field"><span>중계 서버 주소</span><input id="ls-srv" type="text" spellcheck="false" placeholder="relay.example.com:3031" /></label>
         <label class="field"><span>아이디</span><input id="ls-id" type="text" spellcheck="false" maxlength="32" autocapitalize="off" /></label>
         <label class="field"><span>비밀번호</span><input id="ls-login-pw" type="password" maxlength="200" /></label>
+        <label class="toggle"><input id="ls-remember" type="checkbox" checked /><span>자동 로그인 (이 PC 에서는 다음부터 비밀번호 없이)</span></label>
         <div id="ls-login-warn" class="muted small"></div>
         <div id="ls-login-msg" class="ls-msg"></div>
         <div class="ls-actions">
@@ -511,6 +537,7 @@
         <div id="ls-su-meter-text" class="muted small"></div>
         <label class="field"><span>비밀번호 확인</span><input id="ls-su-pw2" type="password" maxlength="200" /></label>
         <label class="field"><span>초대 코드 (서버 주인에게 받은 JINV-… · 필요한 서버만)</span><input id="ls-su-invite" type="text" spellcheck="false" maxlength="40" /></label>
+        <label class="toggle"><input id="ls-su-remember" type="checkbox" checked /><span>자동 로그인 (이 PC 에서는 다음부터 비밀번호 없이)</span></label>
         <p class="muted small">⚠️ 비밀번호는 서버도 모르기 때문에 <b>되찾을 수 없어요.</b> 다른 기기에 로그인해 두면 거기서 바꿀 수는 있어요.</p>
         <div id="ls-su-warn" class="muted small"></div>
         <div id="ls-su-msg" class="ls-msg"></div>
@@ -520,41 +547,18 @@
         </div>
       </form>
 
-      <form id="ls-create" class="ls-step" hidden autocomplete="off">
-        <h2>계정 만들기</h2>
-        <label class="field"><span>이름 (Jam 에서 보이는 이름)</span><input id="ls-name" type="text" maxlength="24" /></label>
-        <label class="field"><span>계정 비밀번호 (10자 이상)</span><input id="ls-pw" type="password" maxlength="200" /></label>
-        <div class="pw-meter"><span id="ls-meter-bar"></span></div>
-        <div id="ls-meter-text" class="muted small"></div>
-        <label class="field"><span>비밀번호 확인</span><input id="ls-pw2" type="password" maxlength="200" /></label>
-        <p class="muted small">⚠️ 이 비밀번호는 <b>되찾을 수 없어요.</b> 잊으면 저장한 비밀번호를 열 수 없어요(서버에 사본이 없기 때문이에요).</p>
-        <div id="ls-create-msg" class="ls-msg"></div>
-        <div class="ls-actions">
-          <button id="ls-create-btn" type="submit" class="primary-btn">만들기</button>
-          <button type="button" class="text-btn ls-back">뒤로</button>
-        </div>
-      </form>
-
-      <section id="ls-secret" class="ls-step" hidden>
-        <h2>🔑 비밀 키를 적어 두세요</h2>
-        <p>비밀번호와 함께 이 <b>비밀 키</b>가 있어야 계정을 열 수 있어요. 이 PC 에는 Windows 계정으로 암호화해 저장해 두었지만,
-          <b>다른 PC 에서 백업을 열거나 Windows 를 다시 설치하면</b> 이 키가 필요해요.</p>
-        <div class="secret-box"><code id="ls-secret-text"></code><button id="ls-secret-copy" class="text-btn small">복사</button></div>
-        <p class="muted small">종이에 적거나 비밀번호 관리자에 보관하세요. 비밀 키는 다시 보여 줄 수 없어요.</p>
-        <label class="toggle"><input id="ls-secret-ok" type="checkbox" /><span>안전한 곳에 적어 두었어요</span></label>
-        <div class="ls-actions"><button id="ls-secret-done" class="primary-btn" disabled>시작하기</button></div>
-      </section>
-
       <form id="ls-unlock" class="ls-step" hidden autocomplete="off">
         <h2 id="ls-unlock-title">잠금 해제</h2>
         <p id="ls-unlock-acct" class="muted small" hidden></p>
         <p id="ls-unlock-reason" class="muted small"></p>
         <label class="field"><span>계정 비밀번호</span><input id="ls-unlock-pw" type="password" maxlength="200" /></label>
         <label id="ls-sk-row" class="field" hidden><span>비밀 키 (JK1-…) · 이 PC 에 저장되어 있지 않아요</span><input id="ls-unlock-sk" type="text" spellcheck="false" placeholder="JK1-XXXX-XXXX-…" /></label>
+        <label id="ls-unlock-remember-row" class="toggle" hidden><input id="ls-unlock-remember" type="checkbox" checked /><span>자동 로그인 (이 PC 에서는 다음부터 비밀번호 없이)</span></label>
         <div id="ls-unlock-msg" class="ls-msg"></div>
         <div class="ls-actions">
           <button id="ls-unlock-btn" type="submit" class="primary-btn">잠금 해제</button>
           <button id="ls-forgot" type="button" class="text-btn">비밀번호를 잊었어요</button>
+          <button id="ls-other" type="button" class="text-btn" hidden>다른 아이디로 로그인</button>
         </div>
         <div id="ls-forgot-box" class="danger-box" hidden>
           <b>비밀번호는 되찾을 수 없어요.</b>
@@ -630,6 +634,9 @@
             <div id="acc-server-on" hidden>
               <div class="set-row"><span id="acc-server-who"></span><button id="acc-sync-now" class="mini-btn">지금 동기화</button></div>
               <div id="acc-sync-state" class="muted small"></div>
+              <label class="set-row"><span>자동 로그인 (앱을 켜면 비밀번호 없이 로그인)</span><span class="toggle"><input id="acc-autologin" type="checkbox" /><span></span></span></label>
+              <p class="muted small">로그인 정보는 Windows 계정 암호화(DPAPI)로 이 PC 에만 보관해요. 켜 두면 자리를 비우거나 Windows 를 잠가도 계정을 잠그지 않아요 (Windows 잠금이 대신 지켜 줘요).</p>
+              <div class="btn-row"><button id="acc-logout" class="secondary-btn small-btn">로그아웃 (이 PC 에서)</button></div>
             </div>
             <form id="acc-upload" hidden autocomplete="off">
               <p class="muted small">이 계정은 지금 이 PC 에만 있어요. 중계 서버에 올리면 다른 기기에서 아이디 · 비밀번호로 로그인해서 같이 쓸 수 있어요 (서버에는 암호화된 채로만 가요).</p>

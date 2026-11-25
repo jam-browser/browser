@@ -63,7 +63,7 @@ const account = (() => {
   function showStep(id) {
     $('#lock-screen').hidden = !id;
     for (const s of document.querySelectorAll('.ls-step')) s.hidden = s.id !== id;
-    const focus = { 'ls-create': '#ls-name', 'ls-unlock': '#ls-unlock-pw', 'ls-login': '#ls-id', 'ls-signup': '#ls-su-id' }[id];
+    const focus = { 'ls-migrate': '#ls-mg-id', 'ls-unlock': '#ls-unlock-pw', 'ls-login': '#ls-id', 'ls-signup': '#ls-su-id' }[id];
     if (focus) setTimeout(() => $(focus).focus(), 30);
   }
   function finishGate() {
@@ -80,6 +80,9 @@ const account = (() => {
     $('#ls-unlock-acct').hidden = !state.account;
     $('#ls-unlock-acct').textContent = state.account ? `🌐 ${state.account.id} @ ${prettyServer(state.account.server)}` : '';
     $('#ls-sk-row').hidden = !!state.account || state.hasSecretKeyHere;
+    $('#ls-unlock-remember-row').hidden = !state.account || !state.dpapi;
+    $('#ls-unlock-remember').checked = true;
+    $('#ls-other').hidden = !state.account;
     $('#ls-unlock-pw').value = '';
     $('#ls-unlock-sk').value = '';
     $('#ls-unlock-msg').textContent = state.waitMs > 0 ? `여러 번 틀려서 ${secs(state.waitMs)}초 뒤에 다시 시도할 수 있어요` : '';
@@ -87,19 +90,88 @@ const account = (() => {
     showStep('ls-unlock');
   }
 
-  // 시작할 때: 계정이 있으면 잠금을 풀어야 브라우저(탭 복원 등)가 시작된다
+  // 시작할 때: 반드시 중계 서버로 로그인해야 브라우저(탭 복원 등)가 시작된다
+  //  - 자동 로그인이 저장돼 있으면 그걸로 (서버에 못 닿으면 "다시 시도" / "비밀번호로")
+  //  - 예전 이 PC 계정은 잠금을 푼 뒤 서버 계정으로 옮겨야 시작
+  //  - "계정 없이" 는 테스트(JAM_TEST_OFFSCREEN)에서만
   async function gate() {
     await refresh();
-    if (state.unlocked) return;
+    if (state.unlocked && state.account) return;
     let skipped = false;
     try { skipped = localStorage.getItem('jam-account-skip') === '1'; } catch {}
-    if (!state.exists && skipped) return;
+    if (!state.exists && skipped && state.testMode) return;
+    $('#ls-skip').hidden = !state.testMode;
     await new Promise((resolve) => {
       gateResolve = resolve;
-      if (state.exists) showUnlock();
-      else showStep('ls-welcome');
+      if (state.unlocked) showMigrate();
+      else if (!state.exists) showStep('ls-welcome');
+      else if (state.account && state.autoLogin) tryAutoLogin();
+      else showUnlock();
     });
   }
+
+  // ---------- 자동 로그인 ----------
+  async function tryAutoLogin() {
+    $('#ls-auto-who').textContent = state.account ? `🌐 ${state.account.id} @ ${prettyServer(state.account.server)}` : '';
+    $('#ls-auto-msg').textContent = '';
+    $('#ls-auto-retry').hidden = $('#ls-auto-pw').hidden = true;
+    showStep('ls-auto');
+    const r = await jamVault.autoLogin().catch((e) => ({ ok: false, error: 'error', message: errText(e) }));
+    if (r.ok) return afterLogin(r, r.via === 'lan' ? '로그인했어요 (인터넷이 안 돼서 같은 네트워크의 중계 서버로)' : null);
+    await refresh();
+    if (r.error === 'offline' || r.error === 'error' || r.error === 'slow-down' || r.error === 'locked') {
+      $('#ls-auto-msg').textContent = r.message || '중계 서버에 연결할 수 없어요';
+      $('#ls-auto-retry').hidden = $('#ls-auto-pw').hidden = false;
+      return;
+    }
+    showUnlock(r.message || '비밀번호로 다시 로그인해 주세요');
+  }
+  $('#ls-auto-retry').addEventListener('click', tryAutoLogin);
+  $('#ls-auto-pw').addEventListener('click', () => showUnlock());
+  // 로그인 · 잠금 해제가 끝난 뒤: 서버 계정이면 시작, 예전 이 PC 계정이면 옮기기부터
+  async function afterLogin(r, note) {
+    await refresh();
+    if (!state.account) return showMigrate();
+    finishGate();
+    if (note) toast(note);
+    if (r && r.insecure) toast('⚠️ 암호화 안 된 중계 서버 주소(ws://)예요. 인터넷에서는 wss:// 를 쓰는 게 안전해요');
+  }
+
+  // ---------- 예전 이 PC 계정 → 서버 계정 (반드시) ----------
+  function showMigrate() {
+    $('#ls-mg-srv').value = $('#ls-mg-srv').value || defaultServer();
+    $('#ls-mg-msg').textContent = insecureNote($('#ls-mg-srv').value);
+    $('#ls-mg-remember').checked = true;
+    showStep('ls-migrate');
+  }
+  $('#ls-migrate').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = $('#ls-mg-msg');
+    const server = $('#ls-mg-srv').value.trim();
+    const id = $('#ls-mg-id').value.trim().toLowerCase();
+    if (!server) return (msg.textContent = '중계 서버 주소를 입력하세요');
+    if (!/^[a-z0-9][a-z0-9._-]{2,31}$/.test(id)) return (msg.textContent = '아이디는 영어 소문자 · 숫자 · . _ - 로 3~32자예요 (첫 글자는 영어나 숫자)');
+    const btn = $('#ls-mg-btn');
+    btn.disabled = true;
+    btn.textContent = '옮기는 중… (암호화 열쇠 만드는 중)';
+    msg.textContent = '';
+    try {
+      const r = await jamVault.serverUpload({ server, id, password: $('#ls-mg-pw').value, invite: $('#ls-mg-invite').value.trim(), remember: $('#ls-mg-remember').checked });
+      if (!r.ok) {
+        msg.textContent = r.waitMs > 0 ? `비밀번호가 틀렸어요. ${secs(r.waitMs)}초 뒤에 다시 시도할 수 있어요` : '지금 계정 비밀번호가 틀렸어요';
+        return;
+      }
+      $('#ls-mg-pw').value = '';
+      rememberServer(server);
+      await afterLogin(r);
+      toast(`🌐 서버 계정 "${id}" 로 옮겼어요. 다른 기기에서도 이 아이디로 로그인하세요`);
+    } catch (err) {
+      msg.textContent = errText(err);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '옮기고 시작하기';
+    }
+  });
 
   // ---------- 서버 계정: 로그인 · 가입 ----------
   const prettyServer = (u) => String(u || '').replace(/^https?:\/\//, '').replace(/^wss?:\/\//, '');
@@ -162,10 +234,8 @@ const account = (() => {
       localStorage.removeItem('jam-account-skip');
     } catch {}
     rememberServer(server);
-    await refresh();
-    finishGate();
-    toast(`${state.name}님, ${verb} 🔐 비밀번호 뱅크 · 친구 · 북마크 · 설정이 이 아이디로 동기화돼요`);
-    if (r.insecure) toast('⚠️ 암호화 안 된 중계 서버 주소(ws://)예요. 인터넷에서는 wss:// 를 쓰는 게 안전해요');
+    await afterLogin(r);
+    toast(`${state.name}님, ${verb}${r.via === 'lan' ? ' (같은 네트워크의 중계 서버로)' : ''} 🔐 비밀번호 뱅크 · 친구 · 북마크 · 설정이 이 아이디로 동기화돼요`);
   }
   $('#ls-login').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -180,7 +250,7 @@ const account = (() => {
     btn.textContent = '로그인 중… (암호화 열쇠 만드는 중)';
     msg.textContent = '';
     try {
-      const r = await jamVault.serverLogin({ server, id, password: pw });
+      const r = await jamVault.serverLogin({ server, id, password: pw, remember: $('#ls-remember').checked });
       $('#ls-login-pw').value = '';
       await serverDone(r, server, '로그인했어요');
     } catch (err) {
@@ -209,7 +279,7 @@ const account = (() => {
     btn.textContent = '만드는 중… (암호화 열쇠 만드는 중)';
     msg.textContent = '';
     try {
-      const r = await jamVault.serverCreate({ server, id, name, password: pw, invite: $('#ls-su-invite').value.trim() });
+      const r = await jamVault.serverCreate({ server, id, name, password: pw, invite: $('#ls-su-invite').value.trim(), remember: $('#ls-su-remember').checked });
       $('#ls-su-pw').value = $('#ls-su-pw2').value = '';
       await serverDone(r, server, '계정을 만들었어요');
     } catch (err) {
@@ -220,70 +290,19 @@ const account = (() => {
     }
   });
 
-  $('#ls-go-create').addEventListener('click', () => {
-    $('#ls-create-msg').textContent = '';
-    showStep('ls-create');
-  });
+  // 테스트에서만 보이는 버튼 (계정과 상관없는 기능 테스트용)
   $('#ls-skip').addEventListener('click', () => {
+    if (!state.testMode) return;
     try { localStorage.setItem('jam-account-skip', '1'); } catch {}
     finishGate();
   });
   document.querySelectorAll('.ls-back').forEach((b) => b.addEventListener('click', () => showStep('ls-welcome')));
-  $('#ls-go-import').addEventListener('click', async () => {
-    try {
-      if (!(await jamVault.importBackup())) return;
-      await refresh();
-      showUnlock('백업을 불러왔어요. 계정 비밀번호와 비밀 키를 입력하세요');
-    } catch (e) {
-      toast(errText(e));
-    }
-  });
-
-  $('#ls-pw').addEventListener('input', () => {
-    const pw = $('#ls-pw').value;
-    const s = strength(pw);
-    Object.assign($('#ls-meter-bar').style, { width: pw ? `${Math.min(100, (s.bits / 90) * 100)}%` : '0', background: s.color });
-    $('#ls-meter-text').textContent = pw ? `${s.text}${pw.length < 10 ? ' · 10자 이상 필요' : ''}` : '';
-  });
-
-  $('#ls-create').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const name = $('#ls-name').value.trim();
-    const pw = $('#ls-pw').value;
-    const msg = $('#ls-create-msg');
-    if (!name) return (msg.textContent = '이름을 입력하세요');
-    if (pw.length < 10) return (msg.textContent = '비밀번호는 10자 이상이어야 해요');
-    if (strength(pw).level < 1) return (msg.textContent = '너무 쉬운 비밀번호예요. 더 길게, 여러 종류의 글자를 섞어 주세요');
-    if (pw !== $('#ls-pw2').value) return (msg.textContent = '비밀번호 확인이 달라요');
-    const btn = $('#ls-create-btn');
-    btn.disabled = true;
-    btn.textContent = '암호화 열쇠 만드는 중…';
-    try {
-      const r = await jamVault.create(name, pw);
-      $('#ls-pw').value = $('#ls-pw2').value = '';
-      $('#ls-secret-text').textContent = r.secretKey;
-      $('#ls-secret-ok').checked = false;
-      $('#ls-secret-done').disabled = true;
-      if (!r.storedHere) toast('⚠️ 이 PC 에 비밀 키를 저장하지 못했어요. 잠금을 풀 때마다 비밀 키를 입력해야 해요');
-      try { localStorage.removeItem('jam-account-skip'); } catch {}
-      await refresh();
-      showStep('ls-secret');
-    } catch (err) {
-      msg.textContent = errText(err);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = '만들기';
-    }
-  });
-  $('#ls-secret-copy').addEventListener('click', async () => {
-    await jamApp.copy($('#ls-secret-text').textContent);
-    toast('비밀 키를 복사했어요. 안전한 곳에 붙여 넣은 뒤 클립보드를 비우세요');
-  });
-  $('#ls-secret-ok').addEventListener('change', (e) => ($('#ls-secret-done').disabled = !e.target.checked));
-  $('#ls-secret-done').addEventListener('click', () => {
-    $('#ls-secret-text').textContent = '';
-    finishGate();
-    toast(`${state.name}님, 브라우저 계정을 만들었어요 🔐`);
+  // 잠금 화면에서 다른 아이디로: 이 PC 의 계정 사본 · 자동 로그인을 지우고 첫 화면으로 (서버 계정은 그대로)
+  $('#ls-other').addEventListener('click', async () => {
+    if (!confirm('이 PC 에서 지금 계정을 로그아웃하고 다른 아이디로 로그인할까요?\n(서버의 계정과 데이터는 그대로예요. 다시 로그인하면 돌아와요)')) return;
+    await jamVault.logout().catch(() => {});
+    await refresh();
+    showStep('ls-welcome');
   });
 
   $('#ls-unlock').addEventListener('submit', async (e) => {
@@ -295,15 +314,16 @@ const account = (() => {
     msg.textContent = '';
     try {
       const sk = $('#ls-sk-row').hidden ? undefined : $('#ls-unlock-sk').value.trim() || undefined;
-      const r = await jamVault.unlock($('#ls-unlock-pw').value, sk);
+      const r = await jamVault.unlock($('#ls-unlock-pw').value, sk, !$('#ls-unlock-remember-row').hidden && $('#ls-unlock-remember').checked);
       if (r.ok) {
         $('#ls-unlock-pw').value = '';
         $('#ls-unlock-sk').value = '';
-        await refresh();
-        finishGate();
+        await afterLogin(r, r.via === 'lan' ? '인터넷이 안 돼서 같은 네트워크의 중계 서버로 로그인했어요' : null);
         return;
       }
       if (r.error === 'wait') msg.textContent = `여러 번 틀려서 ${secs(r.waitMs)}초 뒤에 다시 시도할 수 있어요`;
+      else if (r.error === 'offline') msg.textContent = `${r.message || '중계 서버에 연결할 수 없어요'} — 로그인은 중계 서버를 거쳐야 해요. 인터넷이나 같은 네트워크의 서버가 켜져 있는지 확인해 주세요`;
+      else if (r.error === 'relogin' || r.error === 'locked' || r.error === 'slow-down' || r.error === 'not-supported' || (r.error !== 'wrong' && r.message)) msg.textContent = r.message;
       else if (r.error === 'need-secret-key') {
         $('#ls-sk-row').hidden = false;
         msg.textContent = '이 PC 에 비밀 키가 없어요. 계정을 만들 때 받은 비밀 키를 입력하세요';
@@ -344,6 +364,7 @@ const account = (() => {
     for (const d of ['#vault-dialog', '#pw-ask-dialog']) if ($(d).open) $(d).close();
     await refresh();
     if (info?.reason === 'deleted') return;
+    if (info?.reason === 'logout') return showStep('ls-welcome');
     const reason = {
       idle: '한동안 사용하지 않아서 잠겼어요',
       'os-lock': 'Windows 화면이 잠겨서 함께 잠겼어요',
@@ -647,7 +668,9 @@ const account = (() => {
     $('#acc-server-on').hidden = !a;
     $('#acc-upload').hidden = !!a;
     if (a) {
-      $('#acc-server-who').textContent = `🌐 ${a.id} @ ${prettyServer(a.server)}`;
+      $('#acc-server-who').textContent = `🌐 ${a.id} @ ${prettyServer(a.server)}${state.via === 'lan' ? ' · 지금은 같은 네트워크(LAN)로 연결' : ''}`;
+      $('#acc-autologin').checked = !!state.autoLogin;
+      $('#acc-autologin').disabled = !state.dpapi;
       renderSync();
     } else {
       $('#acc-up-srv').value = $('#acc-up-srv').value || defaultServer();
@@ -660,6 +683,35 @@ const account = (() => {
     } catch (e) {
       renderSync({ state: 'error', message: errText(e) });
     }
+  });
+  $('#acc-autologin').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    try {
+      if (!on) {
+        await jamVault.setAutoLogin(false);
+        toast('자동 로그인을 껐어요. 다음에 앱을 켤 때 비밀번호를 물어요');
+      } else {
+        const pw = await askPassword('자동 로그인을 켜려면 계정 비밀번호를 입력하세요');
+        if (pw === null) return (e.target.checked = false);
+        const r = await jamVault.setAutoLogin(true, pw);
+        if (!r.ok) {
+          e.target.checked = false;
+          return toast(r.message || '비밀번호가 틀렸어요');
+        }
+        toast('자동 로그인을 켰어요. 앱을 켜면 중계 서버에 바로 로그인해요');
+      }
+    } catch (err) {
+      e.target.checked = !on;
+      toast(errText(err));
+    }
+    await refresh();
+  });
+  $('#acc-logout').addEventListener('click', async () => {
+    if (!confirm('이 PC 에서 로그아웃할까요?\n이 PC 의 계정 사본과 자동 로그인이 지워져요. 서버의 계정 · 데이터는 그대로라서 다시 로그인하면 돌아와요.')) return;
+    $('#vault-dialog').close();
+    await jamVault.logout().catch((err) => toast(errText(err)));
+    await refresh();
+    toast('로그아웃했어요');
   });
   jamVault.onSync((st) => {
     state.sync = st;

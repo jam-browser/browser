@@ -7,7 +7,7 @@
 #   ... -Tests friends  # friend status: needs a relay with /friends (1.2.0+)
 #   ... -Tests update   # auto-update signature check: needs dist\win-unpacked + $env:JAM_BROWSER_RELEASE_KEY (the test starts its own app)
 param(
-  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'account', 'friends', 'tabs', 'passkey', 'smoke', 'update'),
+  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'account', 'autologin', 'friends', 'tabs', 'passkey', 'smoke', 'update'),
   [switch]$Packaged,
   [string]$Relay = $env:JAM_E2E_RELAY
 )
@@ -22,7 +22,7 @@ if (-not $Relay) { $cand = Join-Path (Split-Path $app -Parent) 'jam-backend-buil
 # tests that start their own app (update: packaged app + local update server). Starting the usual two apps first
 # would hold the same debug port, so the test would talk to the wrong app
 $selfLaunch = @('update')
-$viaRelay = @{ account = 0; friends = 0; resume = 0;'nearby' = 0; 'mirror' = 0; 'files' = 0; 'relay-cap' = 0.5 }
+$viaRelay = @{ account = 0; friends = 0; resume = 0; vault = 0; settings = 0; 'mirror-security' = 0; autologin = 0; 'nearby' = 0; 'mirror' = 0; 'files' = 0; 'relay-cap' = 0.5 }
 $exe = if ($Packaged) { "$app\dist\win-unpacked\Jam Browser.exe" } else { "$app\node_modules\electron\dist\electron.exe" }
 if (-not (Test-Path $exe)) { Write-Host "App not found: $exe" -ForegroundColor Red; exit 2 }
 New-Item -ItemType Directory -Force "$here\out" | Out-Null
