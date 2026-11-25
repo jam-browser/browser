@@ -112,4 +112,57 @@ function client(base) {
   };
 }
 
-module.exports = { client, serverBase, insecureInternet, AccountError, ID_RE, MESSAGES };
+// ---------- 어느 주소로 로그인할지: 온라인이면 원래 주소, 인터넷이 안 되면 같은 네트워크(LAN) 주소 ----------
+// LAN 주소는 처음 로그인할 때 서버가 알려 준 것만 쓰고, 그 전에 서버 신원 키 서명(hello)을 확인해요.
+// (다른 와이파이에 같은 192.168.x.x 가 있어도 거기로 로그인 값을 보내지 않게)
+const crypto = require('crypto');
+const ED_SPKI = Buffer.from('302a300506032b6570032100', 'hex');
+async function hello(base, timeout = 3000) {
+  const nonce = crypto.randomBytes(24).toString('base64url');
+  const r = await request(base, 'GET', `/account/hello?nonce=${nonce}`, { timeout });
+  return { nonce, key: r.json.key, sig: r.json.sig };
+}
+function verifyHello(pinnedKey, h) {
+  try {
+    if (!pinnedKey || h.key !== pinnedKey) return false;
+    const pub = crypto.createPublicKey({ key: Buffer.concat([ED_SPKI, Buffer.from(pinnedKey, 'base64url')]), format: 'der', type: 'spki' });
+    return crypto.verify(null, Buffer.from(`jam-relay-hello|${h.nonce}`), pub, Buffer.from(String(h.sig || ''), 'base64url'));
+  } catch {
+    return false;
+  }
+}
+const isLanBase = (b) => {
+  try {
+    const h = new URL(b).hostname;
+    return /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|127\.)/.test(h); // 사설 주소 (+ 이 PC — 서버를 같은 PC 에서 돌릴 때)
+  } catch {
+    return false;
+  }
+};
+/**
+ * { server(원래 주소), lan: [LAN 주소], key: 처음 받은 서버 키 } → { api, via: 'online' | 'lan', base }
+ * 원래 주소가 응답하면(오류 응답이어도) 그 주소. 연결 자체가 안 되면 LAN 주소 중 서버 키가 맞는 곳. 둘 다 안 되면 offline
+ */
+async function connect({ server, lan = [], key = null } = {}, { timeout = 4000 } = {}) {
+  try {
+    await hello(server, timeout);
+    return { api: client(server), via: 'online', base: server };
+  } catch (e) {
+    if (e.code !== 'offline') return { api: client(server), via: 'online', base: server }; // 닿기는 함 (예전 서버 등)
+  }
+  const candidates = (Array.isArray(lan) ? lan : []).filter((b) => typeof b === 'string' && isLanBase(b) && b !== server).slice(0, 4);
+  if (key && candidates.length) {
+    const found = await Promise.all(candidates.map(async (b) => {
+      try {
+        return verifyHello(key, await hello(b, 2500)) ? b : null;
+      } catch {
+        return null;
+      }
+    }));
+    const base = found.find(Boolean);
+    if (base) return { api: client(base), via: 'lan', base };
+  }
+  throw new AccountError('offline', candidates.length && key ? '중계 서버에 연결할 수 없어요 (인터넷 주소 · 같은 네트워크 주소 모두 안 돼요)' : '중계 서버에 연결할 수 없어요');
+}
+
+module.exports = { client, connect, hello, verifyHello, serverBase, insecureInternet, AccountError, ID_RE, MESSAGES };

@@ -45,11 +45,8 @@ const q = (s) => `document.querySelector(${JSON.stringify(s)})`;
 
 (async () => {
   const A = await target(P.host);
-  // 계정 만들기 (비밀번호 뱅크 · 가짜 주소 경고 확인용)
-  await until('welcome', () => A.ev(`typeof account==='object' && !${q('#ls-welcome')}.hidden`), 20000);
-  await A.ev(`${q('#ls-go-create')}.click(); ${q('#ls-name')}.value='호스트'; ${q('#ls-pw')}.value='Settings-Test-2026!'; ${q('#ls-pw2')}.value='Settings-Test-2026!'; ${q('#ls-create')}.requestSubmit(); 1`);
-  await until('secret', () => A.ev(`!${q('#ls-secret')}.hidden`), 30000);
-  await A.ev(`${q('#ls-secret-ok')}.click(); ${q('#ls-secret-done')}.click(); 1`);
+  // 계정 만들기 (비밀번호 뱅크 · 가짜 주소 경고 확인용) — 서버 계정 (run.ps1 이 중계 서버를 띄움)
+  await require('./signup').signup(A, { relayPort: process.argv[3], id: 'settings.host', name: '호스트', pw: 'Settings-Test-2026!' });
   await until('booted', () => A.ev(`${q('#lock-screen')}.hidden && tabs.length > 0`), 20000);
   await A.ev(`window.__toasts=[]; { const o = toast; toast = (t, a) => { window.__toasts.push(t); return o(t, a); }; } 1`);
 

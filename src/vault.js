@@ -45,6 +45,7 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
   const FILE = path.join(dir, 'profile.jvault');
   const SK_FILE = path.join(dir, 'secret-key.dat');
   const ATTEMPTS_FILE = path.join(dir, 'attempts.json');
+  const AUTO_FILE = path.join(dir, 'autologin.dat');
   fs.mkdirSync(dir, { recursive: true });
 
   let file = null; // 디스크의 금고 (암호문)
@@ -87,6 +88,24 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     writeAtomic(SK_FILE, wrap(V.formatSecretKey(buf)));
     return true;
   }
+  // 자동 로그인 (기본 켜짐): { 아이디, 로그인 확인 값, 금고 열쇠 } 를 Windows 계정 암호화(DPAPI)로만 보관
+  //  → 앱을 켜면 중계 서버에 이 값으로 로그인해서 금고를 받아 엶. DPAPI 를 못 쓰는 PC 에는 저장하지 않음
+  function readAuto() {
+    try {
+      const raw = fs.readFileSync(AUTO_FILE, 'utf8');
+      if (!raw.startsWith(DPAPI_MAGIC)) return null;
+      const o = JSON.parse(unwrap(raw));
+      return o && o.v === 1 && typeof o.id === 'string' ? o : null;
+    } catch {
+      return null;
+    }
+  }
+  function storeAuto(id, auth, mkBytes) {
+    if (!dpapi()) return false;
+    writeAtomic(AUTO_FILE, wrap(JSON.stringify({ v: 1, id, auth: Buffer.from(auth).toString('base64'), mk: Buffer.from(mkBytes).toString('base64') })));
+    return true;
+  }
+  const clearAuto = () => fs.rmSync(AUTO_FILE, { force: true });
 
   // ---------- 틀린 횟수 제한 ----------
   const readAttempts = () => {
@@ -159,6 +178,9 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
       account: accountMeta(), // 서버 계정이면 { server, id }
       sync: syncState,
       autoLockMinutes: session ? session.doc.settings.autoLockMinutes : null,
+      autoLogin: !!readAuto(),
+      via: acct ? acct.via || 'online' : null, // 지금 어느 주소로 붙어 있나 (online · lan)
+      testMode: process.env.JAM_TEST_OFFSCREEN === '1', // 테스트에서만 "계정 없이" 버튼
       dpapi: dpapi(),
       waitMs: Math.max(0, (a.nextAt || 0) - Date.now()),
     };
@@ -213,7 +235,17 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
       clearInterval(pullTimer);
       return;
     }
+    if (e && e.code === 'offline') acct.reconnect = true; // 다음에는 주소부터 다시 고름 (온라인 ↔ 같은 네트워크)
     setSync(e && e.code === 'offline' ? 'offline' : 'error', { message: (e && e.message) || String(e) });
+  }
+  // 연결이 끊겼던 뒤: 온라인 주소 → 안 되면 같은 네트워크 주소 (서버 키 확인)
+  async function ensureApi() {
+    if (!acct || !acct.reconnect || !file || !file.account) return;
+    const m = file.account;
+    const c = await API.connect({ server: m.server, lan: m.lan, key: m.serverKey });
+    acct.api = c.api;
+    acct.via = c.via;
+    acct.reconnect = false;
   }
   async function withToken(fn) {
     if (!acct.token) await loginAndMerge();
@@ -228,12 +260,15 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
   }
   async function loginAndMerge() {
     setSync('syncing');
+    await ensureApi();
     const r = await acct.api.login(acct.id, acct.auth);
     acct.token = r.token;
+    rememberServer(r.server);
     await applyRemote(r.vault, r.rev);
   }
   async function pull() {
     setSync('syncing');
+    await ensureApi();
     const r = await withToken((t) => acct.api.getVault(t, acct.rev));
     if (r) await applyRemote(r.vault, r.rev);
     else setSync('ok');
@@ -265,6 +300,7 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
   }
   async function push() {
     setSync('syncing');
+    await ensureApi();
     try {
       const r = await withToken((t) => acct.api.putVault(t, acct.rev, uploadable(file)));
       acct.rev = r.rev;
@@ -276,25 +312,78 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
       throw e;
     }
   }
-  // 이 PC 의 금고가 옛 비밀번호로 감싸져 있을 때: 새 비밀번호로 서버에 로그인해서 받은 금고로 바꾸고, 이 PC 문서는 합침
-  async function serverRelogin(local, password) {
-    const api = API.client(local.account.server);
-    const id = local.account.id;
-    const kdf = await api.prelogin(id);
-    const auth = await V.accountAuth(password, kdf, id);
-    let res;
-    try {
-      res = await api.login(id, auth);
-    } finally {
-      auth.fill(0);
+  // 서버가 알려 준 신원 키 · 같은 네트워크 주소를 계정 정보에 기억 (인터넷이 안 될 때 LAN 으로 로그인하려고)
+  function rememberServer(info) {
+    if (!info || !file || !file.account) return;
+    const lan = Array.isArray(info.lan) ? info.lan.filter((u) => typeof u === 'string' && /^https?:\/\/[\d.]+:\d+$/.test(u)).slice(0, 4) : null;
+    const key = typeof info.key === 'string' && /^[A-Za-z0-9_-]{43}$/.test(info.key) ? info.key : null;
+    const next = { ...file.account, ...(lan && lan.length ? { lan } : {}), ...(key ? { serverKey: key } : {}) };
+    if (JSON.stringify(next) !== JSON.stringify(file.account)) {
+      file = { ...file, account: next };
+      writeVaultFile(file);
     }
-    const u = await V.unlockAccountVault(res.vault, password, id);
+  }
+
+  /**
+   * 로그인 (중계 서버를 반드시 거침): 온라인이면 원래 주소, 인터넷이 안 되면 같은 네트워크 주소(서버 키 확인)
+   *  - 비밀번호로: prelogin(kdf) → auth · 금고 열쇠 → login → 받은 금고를 이 PC 에서 엶
+   *  - 자동 로그인: 저장해 둔 auth · 금고 열쇠로 같은 과정
+   *  - 이 PC 에 있던 같은 계정의 금고는 합침 (서버에 안 올라간 변경이 있으면 이어서 올림)
+   * 실패: AccountError — offline(서버에 못 닿음) · bad-login(비밀번호) · relogin(저장된 자동 로그인이 낡음) · locked · slow-down
+   */
+  async function signIn({ base, id, password, saved, remember, local }) {
+    const meta = local && local.account && local.account.id === id ? local.account : {};
+    const conn = await API.connect({ server: base, lan: meta.lan, key: meta.serverKey });
+    let keys;
+    if (saved) keys = { auth: Buffer.from(saved.auth, 'base64'), mkBytes: Buffer.from(saved.mk, 'base64') };
+    else {
+      const kdf = await conn.api.prelogin(id);
+      keys = await V.accountKeys(String(password || ''), kdf, id);
+    }
+    const wipe = () => {
+      keys.auth.fill(0);
+      keys.mkBytes.fill(0);
+    };
+    let r;
+    let s;
     try {
-      u.session.doc = mergeDocs(V.openDocWith(u.session, local), u.session.doc).doc;
-    } catch {}
-    file = { ...V.saveVault(u.session, res.vault), account: { ...local.account, rev: res.rev } };
+      r = await conn.api.login(id, keys.auth);
+      try {
+        s = V.openAccountWith(r.vault, keys.mkBytes);
+      } catch (e) {
+        if (e.code === 'auth') throw new API.AccountError('relogin', '다른 기기에서 비밀번호가 바뀌었어요. 새 비밀번호로 다시 로그인해 주세요');
+        throw e;
+      }
+    } catch (e) {
+      wipe();
+      throw e;
+    }
+    let pushAfter = false;
+    if (meta.id) {
+      try {
+        const m = mergeDocs(V.openDocWith(s, local), s.doc);
+        s.doc = m.doc;
+        pushAfter = m.remoteBehind; // 이 PC 에만 있던 변경 → 서버로
+      } catch {} // 다른 금고(옛 계정)면 서버 것만
+    }
+    file = { ...V.saveVault(s, r.vault), account: { server: base, id, rev: r.rev, ...(meta.lan ? { lan: meta.lan } : {}), ...(meta.serverKey ? { serverKey: meta.serverKey } : {}) } };
     writeVaultFile(file);
-    return { r: u, token: res.token };
+    rememberServer(r.server);
+    session = s;
+    if (remember) storeAuto(id, keys.auth, keys.mkBytes);
+    else clearAuto();
+    keys.mkBytes.fill(0);
+    resetAttempts();
+    lastActivity = Date.now();
+    startSync({ api: conn.api, via: conn.via, id, server: base, auth: keys.auth, token: r.token, rev: r.rev });
+    if (pushAfter) schedulePush();
+    return { ok: true, name: session.doc.profile.name, via: conn.via, insecure: API.insecureInternet(base) };
+  }
+  // 로그인 실패를 화면에 보낼 모양으로
+  function signInError(e) {
+    const code = (e && e.code) || 'error';
+    if (code === 'bad-login') return { ok: false, error: 'wrong', waitMs: registerFail() };
+    return { ok: false, error: code, message: (e && e.message) || String(e) };
   }
   function schedulePush() {
     clearTimeout(pushTimer);
@@ -318,7 +407,7 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
   }
 
   // 새 서버 계정 만들기
-  handle('vault:server-create', async ({ server, id, name, password, invite }) => {
+  handle('vault:server-create', async ({ server, id, name, password, invite, remember = true }) => {
     if (fs.existsSync(FILE)) throw new Error('이미 이 PC 에 계정이 있어요');
     const { base, nid } = checkServerInput(server, id);
     const api = API.client(base);
@@ -329,42 +418,89 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     } catch (e) {
       V.wipeSession(r.session);
       r.auth.fill(0);
+      r.mkBytes.fill(0);
       throw e;
     }
     file = { ...r.file, account: { server: base, id: nid, rev: reg.rev } };
     session = r.session;
     writeVaultFile(file);
+    rememberServer(reg.server);
+    if (remember) storeAuto(nid, r.auth, r.mkBytes);
+    r.mkBytes.fill(0);
     resetAttempts();
     lastActivity = Date.now();
-    startSync({ api, id: nid, server: base, auth: r.auth, token: reg.token, rev: reg.rev });
+    startSync({ api, via: 'online', id: nid, server: base, auth: r.auth, token: reg.token, rev: reg.rev });
     return { ok: true, name: session.doc.profile.name, insecure: API.insecureInternet(base) };
   });
 
-  // 다른 기기에서 만든 서버 계정으로 로그인 (이 PC 에는 아직 계정이 없을 때)
-  handle('vault:server-login', async ({ server, id, password }) => {
-    if (fs.existsSync(FILE)) throw new Error('이미 이 PC 에 계정이 있어요');
+  // 서버 계정으로 로그인 (새 기기 · 로그아웃한 뒤). 이 PC 에 같은 계정이 남아 있으면 합침
+  handle('vault:server-login', async ({ server, id, password, remember = true }) => {
     const { base, nid } = checkServerInput(server, id);
-    const api = API.client(base);
-    const kdf = await api.prelogin(nid);
-    const auth = await V.accountAuth(String(password || ''), kdf, nid);
-    let r;
+    const local = fs.existsSync(FILE) ? readVaultFile() : null;
+    if (local && !(local.account && local.account.id === nid)) throw new Error('이 PC 에 다른 계정이 있어요. 그 계정에서 로그아웃한 뒤 로그인해 주세요');
+    const wait = Math.max(0, (readAttempts().nextAt || 0) - Date.now());
+    if (wait > 0) throw new Error(`잠시 뒤에 다시 해 주세요 (${Math.ceil(wait / 1000)}초)`);
     try {
-      r = await api.login(nid, auth);
-    } finally {
-      auth.fill(0);
+      return await signIn({ base, id: nid, password: String(password || ''), remember, local });
+    } catch (e) {
+      if (e && e.code === 'bad-login') registerFail();
+      throw e;
     }
-    const u = await V.unlockAccountVault(r.vault, String(password || ''), nid);
-    file = { ...r.vault, account: { server: base, id: nid, rev: r.rev } };
-    session = u.session;
-    writeVaultFile(file);
+  });
+
+  // 앱을 켤 때: 저장해 둔 자동 로그인 값으로 중계 서버에 로그인
+  //  → { ok } · { error: 'none' } (저장된 게 없음) · 'relogin' (비밀번호가 바뀜 → 저장값 지움) · 'offline' (서버에 못 닿음, 다시 시도)
+  handle('vault:auto-login', async () => {
+    if (session) return { ok: true, name: session.doc.profile.name };
+    const saved = readAuto();
+    const local = fs.existsSync(FILE) ? readVaultFile() : null;
+    if (!saved || !local || !local.account || local.account.id !== saved.id) return { ok: false, error: 'none' };
+    file = local;
+    try {
+      return await signIn({ base: local.account.server, id: saved.id, saved, remember: true, local });
+    } catch (e) {
+      if (e && (e.code === 'bad-login' || e.code === 'relogin')) {
+        clearAuto();
+        return { ok: false, error: 'relogin', message: e.code === 'relogin' ? e.message : '저장된 로그인이 더 이상 맞지 않아요 (다른 기기에서 비밀번호를 바꿨을 수 있어요)' };
+      }
+      return signInError(e);
+    }
+  });
+  // 자동 로그인 켜기 (지금 비밀번호 확인) · 끄기
+  handle('vault:set-auto-login', async ({ on, password }) => {
+    requireUnlocked();
+    if (!on) {
+      clearAuto();
+      return { ok: true };
+    }
+    if (!file.account) throw new Error('서버 계정에서만 쓸 수 있어요');
+    if (!dpapi()) return { ok: false, error: 'no-dpapi', message: '이 PC 에서는 Windows 계정 암호화를 쓸 수 없어서 자동 로그인을 저장하지 않아요' };
+    const keys = await V.accountKeys(String(password || ''), file.kdf, file.account.id);
+    try {
+      V.wipeSession(V.openAccountWith(file, keys.mkBytes)); // 비밀번호 확인
+    } catch {
+      keys.auth.fill(0);
+      keys.mkBytes.fill(0);
+      return { ok: false, error: 'wrong', waitMs: registerFail() };
+    }
     resetAttempts();
-    lastActivity = Date.now();
-    startSync({ api, id: nid, server: base, auth: u.auth, token: r.token, rev: r.rev });
-    return { ok: true, name: session.doc.profile.name, insecure: API.insecureInternet(base) };
+    storeAuto(file.account.id, keys.auth, keys.mkBytes);
+    keys.auth.fill(0);
+    keys.mkBytes.fill(0);
+    return { ok: true };
+  });
+  // 로그아웃: 서버에 마지막 변경을 올리고 이 PC 의 계정 사본 · 자동 로그인을 지움 (서버 계정은 그대로 → 다시 로그인하면 돌아옴)
+  handle('vault:logout', async () => {
+    if (session && acct) await queueSync(push).catch(() => {});
+    lock('logout');
+    for (const f of [FILE, AUTO_FILE, SK_FILE, ATTEMPTS_FILE]) fs.rmSync(f, { force: true });
+    file = null;
+    return true;
   });
 
   // 이 PC 계정을 서버 계정으로 올리기 (계정 비밀번호를 확인한 뒤, 그 비밀번호로 서버 계정을 만듦)
-  handle('vault:server-upload', async ({ server, id, password, invite }) => {
+  //  v0.6.0 부터 계정은 서버 계정만 → 예전 이 PC 계정은 잠금을 푼 뒤 반드시 이걸로 옮겨요
+  handle('vault:server-upload', async ({ server, id, password, invite, remember = true }) => {
     requireUnlocked();
     if (file.account) throw new Error('이미 서버 계정이에요');
     const { base, nid } = checkServerInput(server, id);
@@ -383,12 +519,16 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
       reg = await api.register(nid, r.auth, r.file, String(invite || '').trim());
     } catch (e) {
       r.auth.fill(0);
+      r.mkBytes.fill(0);
       throw e;
     }
     file = { ...r.file, account: { server: base, id: nid, rev: reg.rev } };
     writeVaultFile(file);
+    rememberServer(reg.server);
     fs.rmSync(SK_FILE, { force: true }); // 서버 계정은 비밀 키를 쓰지 않음
-    startSync({ api, id: nid, server: base, auth: r.auth, token: reg.token, rev: reg.rev });
+    if (remember) storeAuto(nid, r.auth, r.mkBytes);
+    r.mkBytes.fill(0);
+    startSync({ api, via: 'online', id: nid, server: base, auth: r.auth, token: reg.token, rev: reg.rev });
     return { ok: true, insecure: API.insecureInternet(base) };
   });
 
@@ -429,29 +569,19 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     return { secretKey: shown, storedHere };
   });
 
-  handle('vault:unlock', async ({ password, secretKey }) => {
+  handle('vault:unlock', async ({ password, secretKey, remember = true }) => {
     const wait = Math.max(0, (readAttempts().nextAt || 0) - Date.now());
     if (wait > 0) return { ok: false, error: 'wait', waitMs: wait };
     file = readVaultFile();
     if (!file) return { ok: false, error: 'no-vault' };
     if (file.account) {
-      let r;
-      let token = null;
+      // 서버 계정: 이 PC 사본으로 열지 않고 반드시 중계 서버에 로그인 (온라인 → 안 되면 같은 네트워크).
+      // 서버가 받는 건 비밀번호가 아니라 auth. 다른 기기에서 비밀번호를 바꿨어도 서버의 kdf 로 계산하니 새 비밀번호로 열림
       try {
-        r = await V.unlockAccountVault(file, String(password || ''), file.account.id);
+        return await signIn({ base: file.account.server, id: file.account.id, password: String(password || ''), remember, local: file });
       } catch (e) {
-        if (e.code !== 'auth') throw e;
-        // 다른 기기에서 비밀번호를 바꿨을 수 있음 → 이 비밀번호로 서버에 로그인해서 새 금고를 받아 봄 (이 PC 데이터는 합침)
-        const fresh = await serverRelogin(file, String(password || '')).catch(() => null);
-        if (!fresh) return { ok: false, error: 'wrong', waitMs: registerFail() };
-        ({ r, token } = fresh);
+        return signInError(e);
       }
-      session = r.session;
-      resetAttempts();
-      lastActivity = Date.now();
-      startSync({ api: API.client(file.account.server), id: file.account.id, server: file.account.server, auth: r.auth, token, rev: file.account.rev || 0 });
-      if (token) schedulePush(); // 이 PC 에만 있던 변경을 합친 것 올리기
-      return { ok: true, name: session.doc.profile.name };
     }
     const typed = secretKey ? V.parseSecretKey(secretKey) : null;
     if (secretKey && !typed) return { ok: false, error: 'bad-secret-key' };
@@ -491,6 +621,8 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
       acct.rev = res.rev;
       file = { ...r.file, account: { ...file.account, rev: res.rev } };
       writeVaultFile(file);
+      if (readAuto()) storeAuto(file.account.id, r.auth, r.mkBytes); // 자동 로그인도 새 비밀번호로
+      r.mkBytes.fill(0);
       setSync('ok');
       return { ok: true };
     }
@@ -568,7 +700,7 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
       acct.token = null;
     }
     lock('deleted');
-    for (const f of [FILE, SK_FILE, ATTEMPTS_FILE]) fs.rmSync(f, { force: true });
+    for (const f of [FILE, SK_FILE, ATTEMPTS_FILE, AUTO_FILE]) fs.rmSync(f, { force: true });
     file = null;
     try {
       await require('electron').session.fromPartition('persist:jam').clearStorageData();
@@ -822,12 +954,14 @@ function setupVault({ app, ipcMain, safeStorage, clipboard, dialog, powerMonitor
     try {
       if (w && !w.isDestroyed() && w.isFocused() && powerMonitor && powerMonitor.getSystemIdleTime() < 20) lastActivity = Date.now();
     } catch {}
+    // 자동 로그인을 켜 두면 자리를 비워도 잠그지 않음 (앱을 켜기만 하면 어차피 로그인되니까 — Windows 잠금이 대신 지켜 줌)
+    if (readAuto()) return;
     const minutes = session.doc.settings.autoLockMinutes || 10;
     if (Date.now() - lastActivity > minutes * 60e3) lock('idle');
   }, 15000).unref?.();
   if (powerMonitor) {
-    powerMonitor.on('lock-screen', () => lock('os-lock'));
-    powerMonitor.on('suspend', () => lock('suspend'));
+    powerMonitor.on('lock-screen', () => !readAuto() && lock('os-lock'));
+    powerMonitor.on('suspend', () => !readAuto() && lock('suspend'));
   }
 
   return {
