@@ -593,8 +593,9 @@ const account = (() => {
         el(
           'li',
           {},
-          el('span', {}, '⭐'),
+          el('span', { title: '친구 상태 (👥)' }, window.jamFriendStatus ? window.jamFriendStatus.dot(f.fp) : '⭐'),
           el('b', {}, f.name),
+          f.hideStatus ? el('span', { class: 'muted small', title: '이 친구에게는 내 상태가 오프라인으로 보여요 (👥 에서 바꾸기)' }, '🙈 숨김') : null,
           el('code', { title: '신원 지문' }, fpPretty(f.fp)),
           el('button', {
             class: 'mini-btn danger',
@@ -603,6 +604,7 @@ const account = (() => {
               await jamVault.removeFriend(f.fp);
               await renderFriends();
               pushAllow();
+              jamFriends.refresh().catch(() => {});
             },
           }, '삭제')
         )
@@ -621,6 +623,7 @@ const account = (() => {
       toast(`⭐ ${r.name}님을 친구로 추가했어요`);
       await renderFriends();
       pushAllow();
+      jamFriends.refresh().catch(() => {});
     } catch (err) {
       toast(errText(err));
     }

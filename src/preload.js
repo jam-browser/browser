@@ -104,6 +104,7 @@ contextBridge.exposeInMainWorld('jamVault', {
   friends: () => ipcRenderer.invoke('friends:list'),
   addFriend: (code, name) => ipcRenderer.invoke('friends:add', { code, name }),
   removeFriend: (fp) => ipcRenderer.invoke('friends:remove', { fp }),
+  setFriendHide: (fp, hide) => ipcRenderer.invoke('friends:set-hide', { fp, hide: !!hide }),
   saveCapture: (captureId) => ipcRenderer.invoke('pw:save-capture', { captureId }),
   discardCapture: (captureId) => ipcRenderer.invoke('pw:discard-capture', { captureId }),
   onLocked: (cb) => ipcRenderer.on('vault:locked', (_e, info) => cb(info)),
@@ -123,4 +124,13 @@ contextBridge.exposeInMainWorld('jamSite', {
   onClosed: (cb) => ipcRenderer.on('perm:closed', (_e, info) => cb(info)),
   onCount: (cb) => ipcRenderer.on('shield:count', (_e, info) => cb(info)),
   onLocal: (cb) => ipcRenderer.on('shield:local', (_e, info) => cb(info)),
+});
+
+// 친구 상태: 보여 줄 사이트(이미 바꿔 보여 주기 적용) 보내기 · 친구들 상태 받기 (키 · 암호문은 메인 프로세스에만)
+contextBridge.exposeInMainWorld('jamFriends', {
+  set: (site, jam) => ipcRenderer.invoke('fstatus:set', { site, jam: !!jam }),
+  config: (relayUrls) => ipcRenderer.invoke('fstatus:config', { relayUrls }),
+  refresh: () => ipcRenderer.invoke('fstatus:refresh'),
+  get: () => ipcRenderer.invoke('fstatus:get'),
+  onUpdate: (cb) => ipcRenderer.on('fstatus:update', (_e, s) => cb(s)),
 });
