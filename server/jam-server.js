@@ -17,6 +17,7 @@ const { deriveKeys, checkProof, seal, open, C2S, S2C } = require('../shared/jam-
 const ID = require('../shared/identity');
 const PAIR = require('../shared/pairing');
 const MIRROR = require('../shared/mirror');
+const VOTE = require('../shared/vote');
 
 // 입장 방식: approval = 링크 + 호스트 승인(기본) · friends = 링크를 가진 친구만(자동 입장) · open = 링크만 있으면 자유 입장
 const ACCESS = new Set(['approval', 'friends', 'open']);
@@ -231,7 +232,54 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
     media: mediaOut(room),
     mirror: room.mirror || null,
     files: [...room.files.values()].map(publicFile),
+    vote: voteOut(room),
   });
+
+  // ---------- 🗳️ 클릭 투표 ----------
+  // 누가 어디에 투표했는지는 보내지 않고 칸마다 수만 (실시간 표시를 끄면 끝날 때까지 수도 안 보냄)
+  function voteOut(room) {
+    const v = room.vote;
+    if (!v) return null;
+    const closed = v.state === 'closed';
+    return {
+      id: v.id, round: v.round, title: v.title, opts: v.opts, sec: v.sec, live: v.live, auto: v.auto, endAll: v.endAll, series: v.series,
+      state: v.state,
+      left: closed || !v.endsAt ? 0 : Math.max(0, v.endsAt - Date.now()),
+      counts: closed || v.live ? VOTE.tally(v.ballots, v.opts) : null,
+      voted: v.ballots.size,
+      total: room.members.size,
+      result: closed ? v.result : null,
+    };
+  }
+  const pushVote = (room) => broadcast(room, { type: 'vote', vote: voteOut(room) });
+  function closeVote(room) {
+    const v = room.vote;
+    if (!v || v.state !== 'open') return;
+    clearTimeout(v.timer);
+    v.state = 'closed';
+    v.result = VOTE.pickWinner(VOTE.tally(v.ballots, v.opts), v.ballots.get(room.hostId));
+    pushVote(room);
+    const o = v.opts.find((x) => x.k === v.result.winner);
+    const how = { host: ' (동점 → 호스트가 고른 쪽)', random: ' (동점 → 무작위)' }[v.result.how] || '';
+    broadcast(room, {
+      type: 'system',
+      text: o ? `🗳️ ${v.title || '투표'}${v.round > 1 ? ` ${v.round}라운드` : ''}: ${o.k}${o.label ? ` "${o.label}"` : ''} ${v.result.top}표로 결정${how}` : `🗳️ ${v.title || '투표'}: 아무도 투표하지 않았어요`,
+    });
+  }
+  function cancelVote(room, text) {
+    const v = room.vote;
+    if (!v) return;
+    clearTimeout(v.timer);
+    room.vote = null;
+    pushVote(room);
+    if (text) broadcast(room, { type: 'system', text });
+  }
+  function voteTally(room) {
+    const v = room.vote;
+    if (!v || v.state !== 'open') return;
+    if (v.endAll && v.ballots.size >= room.members.size) return closeVote(room); // 모두 투표함
+    broadcast(room, { type: 'vote-tally', id: v.id, counts: v.live ? VOTE.tally(v.ballots, v.opts) : null, voted: v.ballots.size, total: room.members.size });
+  }
   const publicFile = (f) => ({ ...f.meta, ready: !!f.ready });
   // 파일 내려보내기: 참여자마다 줄을 세워 조금씩 (밀리면 기다림)
   let filePump = null;
@@ -398,6 +446,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       broadcast(room, { type: 'members', members: publicMembers(room), hostId: room.hostId }, ws);
       if (kind === 'join') broadcast(room, { type: 'system', text: `${me.name}님이 Jam에 참여했어요` }, ws);
       if (room.mirror) askKeyframe(room, true); // 새로 온 사람도 바로 화면을 볼 수 있게
+      if (room.vote && room.vote.state === 'open') voteTally(room); // 투표 중이면 전체 인원이 바뀜
     }
 
     function authenticate(msg) {
@@ -428,6 +477,7 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
           media: null,
           mirror: null, // 화면 미러링: { sid, by, w, h, title, at }
           files: new Map(), // 같이 보는 파일: fid → { meta, n, chunks, got, ready, data }
+          vote: null, // 🗳️ 클릭 투표: { id, round, ...설정, state, ballots: Map(사람 → 칸), endsAt, timer, result }
           lastKeyReq: 0,
           colorIndex: 0,
         };
@@ -600,6 +650,13 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
       const r = room;
       r.members.delete(me.id);
       if (r.mirror && r.mirror.by === me.id) endMirror(r); // 미러링하던 사람이 나가면 미러링 끝
+      if (r.vote) {
+        if (r.hostId === me.id) cancelVote(r); // 투표를 연 호스트가 나가면 투표 취소
+        else if (r.vote.state === 'open') {
+          r.vote.ballots.delete(me.id);
+          voteTally(r);
+        }
+      }
       room = null;
       if (!me.kicked && L.resumeMs > 0) r.resumes.set(me.resume, { expires: Date.now() + L.resumeMs });
       if (r.members.size === 0) {
@@ -1044,6 +1101,42 @@ function createJamServer({ port = 3030, host = '0.0.0.0', localCreateOnly = fals
             pushMembers(room);
           }
           broadcast(room, { type: 'settings', settings: publicSettings(room) });
+          break;
+        }
+        // ---------- 🗳️ 클릭 투표 (호스트가 열고 · 모두가 투표 · 시간이 되거나 모두 투표하면 끝) ----------
+        case 'vote-open': {
+          if (!isHost) return;
+          const setup = VOTE.cleanSetup(msg);
+          if (!setup) return send(ws, { type: 'error', code: 'bad-vote', message: '투표할 곳을 2~6개 그려 주세요.' });
+          const prev = room.vote;
+          if (prev) clearTimeout(prev.timer);
+          const round = msg.next && prev ? Math.min(999, prev.round + 1) : 1;
+          const v = { id: crypto.randomBytes(6).toString('hex'), round, ...setup, state: 'open', ballots: new Map(), endsAt: 0, timer: null, result: null };
+          if (v.sec > 0) {
+            v.endsAt = Date.now() + v.sec * 1000;
+            v.timer = setTimeout(() => room.vote === v && closeVote(room), v.sec * 1000);
+          }
+          room.vote = v;
+          pushVote(room);
+          break;
+        }
+        case 'vote-cast': {
+          const v = room.vote;
+          if (!v || v.state !== 'open' || msg.id !== v.id) return;
+          if (msg.k === null) v.ballots.delete(me.id);
+          else if (v.opts.some((o) => o.k === msg.k)) v.ballots.set(me.id, msg.k);
+          else return;
+          voteTally(room);
+          break;
+        }
+        case 'vote-close': {
+          if (!isHost || !room.vote || msg.id !== room.vote.id) return;
+          closeVote(room);
+          break;
+        }
+        case 'vote-cancel': {
+          if (!isHost || !room.vote) return;
+          cancelVote(room, msg.quiet ? null : '🗳️ 호스트가 투표를 닫았어요');
           break;
         }
         case 'approve': {
