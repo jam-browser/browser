@@ -990,6 +990,7 @@ const mirror = (() => {
       toast('📍 핑을 찍을 곳을 화면에서 클릭하세요');
     },
     isMirroring: () => !!host,
+    hostTab: () => (host ? host.tab : null), // 🗳️ 투표: 미러링 중인 탭에서 이긴 곳을 누름
     stats: () => ({
       host: host && { frames: host.frames, sent: host.sent, w: host.w, h: host.h, fps: FPS[host.q.fpsI], rate: Math.round(host.q.rate), scale: host.q.scale, codec: host.codec.codec, paused: host.paused, secret: host.secret, cap: Math.round(host.q.cap), stat: host.stat },
       view: view && { frames: view.frames, w: view.w, h: view.h, waitingKey: view.waitingKey, fps: view.fps, codec: view.codec, paused: view.paused, secret: view.secret },

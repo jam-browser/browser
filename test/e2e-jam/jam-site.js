@@ -4,6 +4,14 @@ const page = (title, body) => `<!doctype html><meta charset="utf-8"><title>${tit
 http
   .createServer((req, res) => {
     const u = new URL(req.url, 'http://localhost');
+    // 🗳️ 투표 E2E: 이상형 월드컵 흉내 — 왼쪽 · 오른쪽 반을 누르면 주소는 그대로 다음 라운드 (고른 쪽은 window.__picks)
+    if (u.pathname === '/worldcup') {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(`<!doctype html><meta charset="utf-8"><title>월드컵</title>
+<style>html,body{margin:0;height:100%;font:700 28px sans-serif}#w{display:flex;height:100%}#w div{flex:1;display:flex;align-items:center;justify-content:center;cursor:pointer}#L{background:#ffcfd8}#R{background:#cfe3ff}#round{position:fixed;top:8px;left:50%;transform:translateX(-50%)}</style>
+<div id="round">1라운드</div><div id="w"><div id="L">후보 1</div><div id="R">후보 2</div></div>
+<script>window.__picks=[];let r=1,n=3;for(const id of ['L','R'])document.getElementById(id).addEventListener('click',(e)=>{__picks.push({side:id==='L'?'left':'right',trusted:e.isTrusted,round:r});r++;document.getElementById('round').textContent=r+'라운드';document.getElementById('L').textContent='후보 '+(n++);document.getElementById('R').textContent='후보 '+(n++);});</script>`);
+    }
     if (u.pathname === '/doc.pdf') {
       res.writeHead(200, { 'Content-Type': 'application/pdf' });
       return res.end(require('fs').readFileSync(require('path').join(__dirname, 'fixtures', 'test-5p.pdf')));

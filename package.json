@@ -1,7 +1,7 @@
 {
   "name": "jam-browser",
   "productName": "Jam Browser",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "친구와 같은 페이지를 함께 보는 Jam 기능이 있는 데스크톱 브라우저",
   "author": "jam-browser",
   "homepage": "https://github.com/jam-browser/browser",
@@ -11,7 +11,7 @@
     "postinstall": "node scripts/build-toolbar-preload.js",
     "start": "electron .",
     "jam": "node scripts/jam-dev.js",
-    "test": "node test/sync-test.js && node test/relay-test.js && node test/vault-test.js && node test/access-test.js && node test/nearby-test.js && node test/mirror-test.js && node test/files-test.js && node test/settings-test.js && node test/ping-test.js && node test/update-test.js && node test/siteguard-test.js && node test/presence-test.js && node test/account-test.js && node test/friend-status-test.js",
+    "test": "node test/sync-test.js && node test/relay-test.js && node test/vault-test.js && node test/access-test.js && node test/nearby-test.js && node test/mirror-test.js && node test/files-test.js && node test/settings-test.js && node test/ping-test.js && node test/update-test.js && node test/siteguard-test.js && node test/presence-test.js && node test/account-test.js && node test/friend-status-test.js && node test/vote-test.js",
     "icon": "electron scripts/make-icon.js",
     "dist": "electron-builder --win --publish never",
     "release": "electron-builder --win --publish always"

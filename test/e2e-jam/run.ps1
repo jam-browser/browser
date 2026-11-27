@@ -7,7 +7,7 @@
 #   ... -Tests friends  # friend status: needs a relay with /friends (1.2.0+)
 #   ... -Tests update   # auto-update signature check: needs dist\win-unpacked + $env:JAM_BROWSER_RELEASE_KEY (the test starts its own app)
 param(
-  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'relay-cap', 'siteguard', 'resume', 'account', 'autologin', 'friends', 'tabs', 'passkey', 'smoke', 'update'),
+  [string[]]$Tests = @('nearby', 'vault', 'mirror', 'mirror-security', 'mirror-aspect', 'files', 'settings', 'ping', 'ping-wheel', 'vote', 'relay-cap', 'siteguard', 'resume', 'account', 'autologin', 'friends', 'tabs', 'passkey', 'smoke', 'update'),
   [switch]$Packaged,
   [string]$Relay = $env:JAM_E2E_RELAY
 )

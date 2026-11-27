@@ -1059,6 +1059,7 @@ function adoptWelcome(ws, welcome, keys) {
   applyMedia();
   mirror.onWelcome(welcome.room);
   jamFiles.onWelcome(welcome.room);
+  jamVote.onWelcome(welcome.room);
   for (const msg of ws.early.splice(0)) handleMessage(msg);
 }
 
@@ -1099,6 +1100,7 @@ function cleanupJam() {
   }
   mirror.reset();
   jamFiles.reset();
+  jamVote.reset();
   if (jam.tab && jam.tab.ready) jam.tab.webview.send('jam:clear');
   if (jam.lockedWcId != null) jamApp.setLock(jam.lockedWcId, false);
   jam.lockedWcId = null;
@@ -1383,6 +1385,10 @@ function handleMessage(msg) {
     case 'mping':
       mirror.handle(msg); // 화면 미러링 (mirror.js)
       break;
+    case 'vote':
+    case 'vote-tally':
+      jamVote.handle(msg); // 🗳️ 클릭 투표 (vote.js)
+      break;
     case 'file':
     case 'file-removed':
     case 'file-down':
@@ -1533,6 +1539,7 @@ function renderJam() {
   renderNearby();
   mirror.render();
   jamFiles.render();
+  if (typeof jamVote !== 'undefined') jamVote.render(); // 🗳️ 버튼은 호스트만
   pushPingConfig();
   if (!jam.active) return;
   $('#nearby-row').hidden = !jam.isHost();
